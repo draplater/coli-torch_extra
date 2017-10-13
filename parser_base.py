@@ -8,6 +8,7 @@ from pprint import pformat
 
 import os
 import sys
+import subprocess
 from abc import ABCMeta, abstractmethod, abstractproperty
 
 import time
@@ -88,6 +89,11 @@ class DependencyParserBase(object):
                 with open(output_file, "w") as f_output:
                     for i in parser.predict(sentences):
                         f_output.write(i.to_string())
+                # script_path = os.path.join(os.path.dirname(__file__), "main.py")
+                # p = subprocess.Popen([sys.executable, script_path, "mst+empty", "predict", "--model", path,
+                #                       "--test", gold_file,
+                #                       "--output", output_file], stdout=sys.stdout)
+                # p.wait()
                 cls.DataType.evaluate_with_external_program(gold_file, output_file)
 
             for file_name, file_content in data_dev.items():
