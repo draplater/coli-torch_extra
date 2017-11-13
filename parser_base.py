@@ -120,6 +120,10 @@ class DependencyParserBase(object):
         te = time.time()
         logger.info('Finished predicting and writing test. %.2f seconds.', te - ts)
 
+        if options.evaluate:
+            cls.DataType.evaluate_with_external_program(options.conll_test,
+                                                        options.out_file)
+
     @classmethod
     def get_arg_parser(cls):
         parser = ArgumentParser(sys.argv[0])
