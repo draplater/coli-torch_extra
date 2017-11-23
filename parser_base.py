@@ -16,7 +16,7 @@ import time
 import graph_utils
 import tree_utils
 from common_utils import set_proc_name, add_common_arguments, add_train_arguments, add_predict_arguments, ensure_dir, \
-    add_train_and_predict_arguments
+    add_train_and_predict_arguments, smart_open
 from logger import logger, log_to_file
 from training_scheduler import TrainingScheduler
 
@@ -108,13 +108,33 @@ class DependencyParserBase(object):
 
     @classmethod
     def predict_with_parser(cls, options):
-        data_test = cls.DataType.from_file(options.conll_test, False)
+        if options.input_format == "standard":
+            data_test = cls.DataType.from_file(options.conll_test, False)
+        elif options.input_format == "space":
+            with smart_open(options.conll_test) as f:
+                data_test = [cls.DataType.from_words_and_postags([(word, "X") for word in line.strip().split(" ")])
+                             for line in f]
+        elif options.input_format == "english":
+            from nltk import download, sent_tokenize
+            from nltk.tokenize import TreebankWordTokenizer
+            download("punkt")
+            with smart_open(options.conll_test) as f:
+                raw_sents = sent_tokenize(f.read().strip())
+                tokenized_sents = TreebankWordTokenizer().tokenize_sents(raw_sents)
+                data_test = [cls.DataType.from_words_and_postags([(token, "X") for token in sent])
+                             for sent in tokenized_sents]
+        elif options.input_format == "tokenlist":
+            with smart_open(options.conll_test) as f:
+                items = eval(f.read())
+            data_test = cls.DataType.from_words_and_postags(items)
+        else:
+            raise ValueError("invalid format option")
 
         logger.info('Initializing...')
         parser = cls.load(options.model, options)
 
         ts = time.time()
-        with open(options.out_file, "w") as f_output:
+        with smart_open(options.out_file, "w") as f_output:
             for i in parser.predict(data_test):
                 f_output.write(i.to_string())
         te = time.time()
