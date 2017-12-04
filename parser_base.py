@@ -47,7 +47,7 @@ class DependencyParserBase(object):
     def add_parser_arguments(cls, arg_parser):
         group = arg_parser.add_argument_group(DependencyParserBase.__name__)
         group.add_argument("--epochs", type=int, dest="epochs", default=30)
-        group.add_argument("--lr", type=float, dest="learning_rate", default=0.1)
+        group.add_argument("--lr", type=float, dest="learning_rate", default=None)
 
     @classmethod
     def train_parser(cls, options, data_train=None, data_dev=None, data_test=None):
