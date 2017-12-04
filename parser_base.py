@@ -172,7 +172,11 @@ class DependencyParserBase(object):
 
     @classmethod
     def get_training_scheduler(cls, train=None, dev=None, test=None):
-        return TrainingScheduler(cls.train_parser, cls.get_arg_parser(), train, dev ,test)
+        return TrainingScheduler(cls.train_parser, cls, train, dev ,test)
+
+    @classmethod
+    def get_next_arg_parser(cls, stage, options):
+        return None
 
 
 @six.add_metaclass(ABCMeta)
