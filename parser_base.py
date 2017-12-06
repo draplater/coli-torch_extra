@@ -8,15 +8,13 @@ from pprint import pformat
 
 import os
 import sys
-import subprocess
 from abc import ABCMeta, abstractmethod, abstractproperty
 
 import time
 
 import graph_utils
 import tree_utils
-from common_utils import set_proc_name, add_common_arguments, add_train_arguments, add_predict_arguments, ensure_dir, \
-    add_train_and_predict_arguments, smart_open
+from common_utils import set_proc_name, ensure_dir, smart_open
 from logger import logger, log_to_file
 from training_scheduler import TrainingScheduler
 
@@ -46,8 +44,40 @@ class DependencyParserBase(object):
     @classmethod
     def add_parser_arguments(cls, arg_parser):
         group = arg_parser.add_argument_group(DependencyParserBase.__name__)
+        group.add_argument("--title", type=str, dest="title", default="default")
+        group.add_argument("--train", dest="conll_train", help="Annotated CONLL train file", metavar="FILE", required=True)
+        group.add_argument("--dev", dest="conll_dev", help="Annotated CONLL dev file", metavar="FILE", nargs="+", required=True)
+        group.add_argument("--outdir", type=str, dest="output", required=True)
+        group.add_argument("--max-save", type=int, dest="max_save", default=2)
+        group.add_argument("--model", dest="model", help="Load/Save model file", metavar="FILE", default="model.")
         group.add_argument("--epochs", type=int, dest="epochs", default=30)
         group.add_argument("--lr", type=float, dest="learning_rate", default=None)
+
+    @classmethod
+    def add_predict_arguments(cls, arg_parser):
+        group = arg_parser.add_argument_group(DependencyParserBase.__name__)
+        group.add_argument("--output", dest="out_file", help="Output file", metavar="FILE", required=True)
+        group.add_argument("--model", dest="model", help="Load/Save model file", metavar="FILE", required=True)
+        group.add_argument("--test", dest="conll_test", help="Annotated CONLL test file", metavar="FILE", required=True)
+        group.add_argument("--eval", action="store_true", dest="evaluate", default=False)
+        group.add_argument("--format", dest="input_format", choices=["standard", "tokenlist", "space", "english"],
+                            help='Input format. (default)"standard": use the same format of treebank;\n'
+                                 'tokenlist: like [[(sent_1_word1, sent_1_pos1), ...], [...]];\n'
+                                 'space: sentence is separated by newlines, and words are separated by space;'
+                                 'no POSTag info will be used. \n'
+                                 'english: raw english sentence that will be processed by NLTK tokenizer, '
+                                 'no POSTag info will be used.',
+                            default="standard"
+                            )
+
+    @classmethod
+    def add_common_arguments(cls, arg_parser):
+        group = arg_parser.add_argument_group(DependencyParserBase.__name__ + "(train and test)")
+        group.add_argument("--dynet-seed", type=int, dest="seed", default=0)
+        group.add_argument("--dynet-mem", type=int, dest="mem", default=0)
+        group.add_argument("--dynet-l2", type=float, dest="l2", default=0.0)
+        group.add_argument("--dynet-weight-decay", type=float, dest="weight_decay", default=0.0)
+        group.add_argument("--output-scores", action="store_true", dest="output_scores", default=False)
 
     @classmethod
     def train_parser(cls, options, data_train=None, data_dev=None, data_test=None):
@@ -152,22 +182,20 @@ class DependencyParserBase(object):
 
     @classmethod
     def fill_arg_parser(cls, parser):
-        add_common_arguments(parser)
         sub_parsers = parser.add_subparsers()
         sub_parsers.required = True
         sub_parsers.dest = 'mode'
 
         # Train
         train_subparser = sub_parsers.add_parser("train")
-        add_train_arguments(train_subparser)
-        add_train_and_predict_arguments(train_subparser)
         cls.add_parser_arguments(train_subparser)
+        cls.add_common_arguments(train_subparser)
         train_subparser.set_defaults(func=cls.train_parser)
 
         # Predict
         predict_subparser = sub_parsers.add_parser("predict")
-        add_predict_arguments(predict_subparser)
-        add_train_and_predict_arguments(predict_subparser)
+        cls.add_predict_arguments(predict_subparser)
+        cls.add_common_arguments(predict_subparser)
         predict_subparser.set_defaults(func=cls.predict_with_parser)
 
     @classmethod
