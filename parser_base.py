@@ -48,7 +48,7 @@ class DependencyParserBase(object):
         group.add_argument("--train", dest="conll_train", help="Annotated CONLL train file", metavar="FILE", required=True)
         group.add_argument("--dev", dest="conll_dev", help="Annotated CONLL dev file", metavar="FILE", nargs="+", required=True)
         group.add_argument("--outdir", type=str, dest="output", required=True)
-        group.add_argument("--max-save", type=int, dest="max_save", default=2)
+        group.add_argument("--max-save", type=int, dest="max_save", default=100)
         group.add_argument("--model", dest="model", help="Load/Save model file", metavar="FILE", default="model.")
         group.add_argument("--epochs", type=int, dest="epochs", default=30)
         group.add_argument("--lr", type=float, dest="learning_rate", default=None)
@@ -81,15 +81,19 @@ class DependencyParserBase(object):
         group.add_argument("--output-scores", action="store_true", dest="output_scores", default=False)
 
     @classmethod
+    def options_hook(cls, options):
+        logger.info('Options:\n%s', pformat(options.__dict__))
+
+    @classmethod
     def train_parser(cls, options, data_train=None, data_dev=None, data_test=None):
         set_proc_name(options.title)
         ensure_dir(options.output)
         path = os.path.join(options.output, "{}_{}_train.log".format(options.title,
                                                                      int(time.time())))
+        cls.options_hook(options)
         log_to_file(path)
         logger.name = options.title
 
-        logger.info('Options:\n%s', pformat(options.__dict__))
         if data_train is None:
             data_train = cls.DataType.from_file(options.conll_train)
 
