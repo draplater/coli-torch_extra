@@ -90,9 +90,9 @@ class DependencyParserBase(object):
         ensure_dir(options.output)
         path = os.path.join(options.output, "{}_{}_train.log".format(options.title,
                                                                      int(time.time())))
-        cls.options_hook(options)
         log_to_file(path)
         logger.name = options.title
+        cls.options_hook(options)
 
         if data_train is None:
             data_train = cls.DataType.from_file(options.conll_train)
