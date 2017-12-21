@@ -76,6 +76,7 @@ class DependencyParserBase(object):
         group.add_argument("--dynet-seed", type=int, dest="seed", default=0)
         group.add_argument("--dynet-autobatch", type=int, dest="autobatch", default=0)
         group.add_argument("--dynet-mem", type=int, dest="mem", default=0)
+        group.add_argument("--dynet-gpus", type=int, dest="mem", default=0)
         group.add_argument("--dynet-l2", type=float, dest="l2", default=0.0)
         group.add_argument("--dynet-weight-decay", type=float, dest="weight_decay", default=0.0)
         group.add_argument("--output-scores", action="store_true", dest="output_scores", default=False)
@@ -110,6 +111,7 @@ class DependencyParserBase(object):
         for epoch in range(options.epochs):
             logger.info('Starting epoch %d', epoch)
             random_obj.shuffle(data_train)
+            options.is_train = True
             parser.train(data_train)
 
             # save model and delete old model
@@ -121,6 +123,7 @@ class DependencyParserBase(object):
             parser.save(path)
 
             def predict(sentences, gold_file, output_file):
+                options.is_train = False
                 with open(output_file, "w") as f_output:
                     for i in parser.predict(sentences):
                         f_output.write(i.to_string())
@@ -165,8 +168,10 @@ class DependencyParserBase(object):
         else:
             raise ValueError("invalid format option")
 
-        logger.info('Initializing...')
+        logger.info('Loading Model...')
+        options.is_train = False
         parser = cls.load(options.model, options)
+        logger.info('Model loaded')
 
         ts = time.time()
         with smart_open(options.out_file, "w") as f_output:
