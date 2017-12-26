@@ -138,7 +138,7 @@ class DependencyParserBase(object):
                 try:
                     prefix, suffix = os.path.basename(file_name).rsplit(".", 1)
                 except ValueError:
-                    prefix = file_name
+                    prefix = os.path.basename(file_name)
                     suffix = ""
 
                 dev_output = os.path.join(options.output, '{}_epoch_{}.{}'.format(prefix, epoch + 1, suffix))
