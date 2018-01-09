@@ -157,7 +157,10 @@ class DependencyParserBase(object):
             from nltk.tokenize import TreebankWordTokenizer
             download("punkt")
             with smart_open(options.conll_test) as f:
-                raw_sents = sent_tokenize(f.read().strip())
+                raw_sents = []
+                for line in f:
+                    this_line_sents = sent_tokenize(line.strip())
+                    raw_sents.extend(this_line_sents)
                 tokenized_sents = TreebankWordTokenizer().tokenize_sents(raw_sents)
                 data_test = [cls.DataType.from_words_and_postags([(token, "X") for token in sent])
                              for sent in tokenized_sents]
