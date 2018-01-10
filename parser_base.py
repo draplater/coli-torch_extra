@@ -60,7 +60,8 @@ class DependencyParserBase(object):
         group.add_argument("--model", dest="model", help="Load/Save model file", metavar="FILE", required=True)
         group.add_argument("--test", dest="conll_test", help="Annotated CONLL test file", metavar="FILE", required=True)
         group.add_argument("--eval", action="store_true", dest="evaluate", default=False)
-        group.add_argument("--format", dest="input_format", choices=["standard", "tokenlist", "space", "english"],
+        group.add_argument("--format", dest="input_format", choices=["standard", "tokenlist",
+                                                                     "space", "english", "english-line"],
                             help='Input format. (default)"standard": use the same format of treebank;\n'
                                  'tokenlist: like [[(sent_1_word1, sent_1_pos1), ...], [...]];\n'
                                  'space: sentence is separated by newlines, and words are separated by space;'
@@ -152,15 +153,18 @@ class DependencyParserBase(object):
             with smart_open(options.conll_test) as f:
                 data_test = [cls.DataType.from_words_and_postags([(word, "X") for word in line.strip().split(" ")])
                              for line in f]
-        elif options.input_format == "english":
+        elif options.input_format.startswith("english"):
             from nltk import download, sent_tokenize
             from nltk.tokenize import TreebankWordTokenizer
             download("punkt")
             with smart_open(options.conll_test) as f:
                 raw_sents = []
                 for line in f:
-                    this_line_sents = sent_tokenize(line.strip())
-                    raw_sents.extend(this_line_sents)
+                    if options.input_format == "english-line":
+                        raw_sents.append(line.strip())
+                    else:
+                        this_line_sents = sent_tokenize(line.strip())
+                        raw_sents.extend(this_line_sents)
                 tokenized_sents = TreebankWordTokenizer().tokenize_sents(raw_sents)
                 data_test = [cls.DataType.from_words_and_postags([(token, "X") for token in sent])
                              for sent in tokenized_sents]
