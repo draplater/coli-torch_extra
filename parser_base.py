@@ -21,7 +21,17 @@ from training_scheduler import TrainingScheduler
 
 @six.add_metaclass(ABCMeta)
 class DependencyParserBase(object):
-    DataType = abstractproperty()
+    DataType = None
+    available_data_formats = {}
+    default_data_format_name = "default"
+
+    @classmethod
+    def get_data_formats(cls):
+        """ for old class which has "DataType" but not "available_data_formats" """
+        if not cls.available_data_formats:
+            return {"default": cls.DataType}
+        else:
+            return cls.available_data_formats
 
     @abstractmethod
     def train(self, graphs):
@@ -45,8 +55,10 @@ class DependencyParserBase(object):
     def add_parser_arguments(cls, arg_parser):
         group = arg_parser.add_argument_group(DependencyParserBase.__name__)
         group.add_argument("--title", type=str, dest="title", default="default")
-        group.add_argument("--train", dest="conll_train", help="Annotated CONLL train file", metavar="FILE", required=True)
-        group.add_argument("--dev", dest="conll_dev", help="Annotated CONLL dev file", metavar="FILE", nargs="+", required=True)
+        group.add_argument("--train", dest="conll_train", help="Annotated CONLL train file", metavar="FILE",
+                           required=True)
+        group.add_argument("--dev", dest="conll_dev", help="Annotated CONLL dev file", metavar="FILE", nargs="+",
+                           required=True)
         group.add_argument("--outdir", type=str, dest="output", required=True)
         group.add_argument("--max-save", type=int, dest="max_save", default=100)
         group.add_argument("--model", dest="model", help="Load/Save model file", metavar="FILE", default="model.")
@@ -62,14 +74,14 @@ class DependencyParserBase(object):
         group.add_argument("--eval", action="store_true", dest="evaluate", default=False)
         group.add_argument("--format", dest="input_format", choices=["standard", "tokenlist",
                                                                      "space", "english", "english-line"],
-                            help='Input format. (default)"standard": use the same format of treebank;\n'
-                                 'tokenlist: like [[(sent_1_word1, sent_1_pos1), ...], [...]];\n'
-                                 'space: sentence is separated by newlines, and words are separated by space;'
-                                 'no POSTag info will be used. \n'
-                                 'english: raw english sentence that will be processed by NLTK tokenizer, '
-                                 'no POSTag info will be used.',
-                            default="standard"
-                            )
+                           help='Input format. (default)"standard": use the same format of treebank;\n'
+                                'tokenlist: like [[(sent_1_word1, sent_1_pos1), ...], [...]];\n'
+                                'space: sentence is separated by newlines, and words are separated by space;'
+                                'no POSTag info will be used. \n'
+                                'english: raw english sentence that will be processed by NLTK tokenizer, '
+                                'no POSTag info will be used.',
+                           default="standard"
+                           )
 
     @classmethod
     def add_common_arguments(cls, arg_parser):
@@ -81,6 +93,9 @@ class DependencyParserBase(object):
         group.add_argument("--dynet-l2", type=float, dest="l2", default=0.0)
         group.add_argument("--dynet-weight-decay", type=float, dest="weight_decay", default=0.0)
         group.add_argument("--output-scores", action="store_true", dest="output_scores", default=False)
+        group.add_argument("--data-format", dest="data_format",
+                           choices=cls.get_data_formats(),
+                           default=cls.default_data_format_name)
 
     @classmethod
     def options_hook(cls, options):
@@ -95,12 +110,13 @@ class DependencyParserBase(object):
         log_to_file(path)
         logger.name = options.title
         cls.options_hook(options)
+        DataFormatClass = cls.get_data_formats()[options.data_format]
 
         if data_train is None:
-            data_train = cls.DataType.from_file(options.conll_train)
+            data_train = DataFormatClass.from_file(options.conll_train)
 
         if data_dev is None:
-            data_dev = {i: cls.DataType.from_file(i, False) for i in options.conll_dev}
+            data_dev = {i: DataFormatClass.from_file(i, False) for i in options.conll_dev}
 
         try:
             os.makedirs(options.output)
@@ -126,6 +142,8 @@ class DependencyParserBase(object):
             def predict(sentences, gold_file, output_file):
                 options.is_train = False
                 with open(output_file, "w") as f_output:
+                    if hasattr(DataFormatClass, "file_header"):
+                        f_output.write(DataFormatClass.file_header + "\n")
                     for i in parser.predict(sentences):
                         f_output.write(i.to_string())
                 # script_path = os.path.join(os.path.dirname(__file__), "main.py")
@@ -133,7 +151,7 @@ class DependencyParserBase(object):
                 #                       "--test", gold_file,
                 #                       "--output", output_file], stdout=sys.stdout)
                 # p.wait()
-                cls.DataType.evaluate_with_external_program(gold_file, output_file)
+                DataFormatClass.evaluate_with_external_program(gold_file, output_file)
 
             for file_name, file_content in data_dev.items():
                 try:
@@ -147,11 +165,12 @@ class DependencyParserBase(object):
 
     @classmethod
     def predict_with_parser(cls, options):
+        DataFormatClass = cls.get_data_formats()[options.data_format]
         if options.input_format == "standard":
-            data_test = cls.DataType.from_file(options.conll_test, False)
+            data_test = DataFormatClass.from_file(options.conll_test, False)
         elif options.input_format == "space":
             with smart_open(options.conll_test) as f:
-                data_test = [cls.DataType.from_words_and_postags([(word, "X") for word in line.strip().split(" ")])
+                data_test = [DataFormatClass.from_words_and_postags([(word, "X") for word in line.strip().split(" ")])
                              for line in f]
         elif options.input_format.startswith("english"):
             from nltk import download, sent_tokenize
@@ -166,12 +185,12 @@ class DependencyParserBase(object):
                         this_line_sents = sent_tokenize(line.strip())
                         raw_sents.extend(this_line_sents)
                 tokenized_sents = TreebankWordTokenizer().tokenize_sents(raw_sents)
-                data_test = [cls.DataType.from_words_and_postags([(token, "X") for token in sent])
+                data_test = [DataFormatClass.from_words_and_postags([(token, "X") for token in sent])
                              for sent in tokenized_sents]
         elif options.input_format == "tokenlist":
             with smart_open(options.conll_test) as f:
                 items = eval(f.read())
-            data_test = cls.DataType.from_words_and_postags(items)
+            data_test = DataFormatClass.from_words_and_postags(items)
         else:
             raise ValueError("invalid format option")
 
@@ -182,14 +201,16 @@ class DependencyParserBase(object):
 
         ts = time.time()
         with smart_open(options.out_file, "w") as f_output:
+            if hasattr(DataFormatClass, "file_header"):
+                f_output.write(DataFormatClass.file_header + "\n")
             for i in parser.predict(data_test):
                 f_output.write(i.to_string())
         te = time.time()
         logger.info('Finished predicting and writing test. %.2f seconds.', te - ts)
 
         if options.evaluate:
-            cls.DataType.evaluate_with_external_program(options.conll_test,
-                                                        options.out_file)
+            DataFormatClass.evaluate_with_external_program(options.conll_test,
+                                                           options.out_file)
 
     @classmethod
     def get_arg_parser(cls):
@@ -217,7 +238,7 @@ class DependencyParserBase(object):
 
     @classmethod
     def get_training_scheduler(cls, train=None, dev=None, test=None):
-        return TrainingScheduler(cls.train_parser, cls, train, dev ,test)
+        return TrainingScheduler(cls.train_parser, cls, train, dev, test)
 
     @classmethod
     def get_next_arg_parser(cls, stage, options):
@@ -226,9 +247,11 @@ class DependencyParserBase(object):
 
 @six.add_metaclass(ABCMeta)
 class GraphParserBase(DependencyParserBase):
-    DataType = graph_utils.Graph
+    available_data_formats = {"sdp2014": graph_utils.Graph, "sdp2015": graph_utils.Graph2015}
+    default_data_format_name = "sdp2014"
 
 
 @six.add_metaclass(ABCMeta)
 class TreeParserBase(DependencyParserBase):
-    DataType = tree_utils.Sentence
+    available_data_formats = {"conllu": tree_utils.Sentence}
+    default_data_format_name = "conllu"
