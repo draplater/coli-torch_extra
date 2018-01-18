@@ -88,7 +88,7 @@ class DependencyParserBase(object):
         group = arg_parser.add_argument_group(DependencyParserBase.__name__ + "(train and test)")
         group.add_argument("--dynet-seed", type=int, dest="seed", default=0)
         group.add_argument("--dynet-autobatch", type=int, dest="autobatch", default=0)
-        group.add_argument("--dynet-mem", type=int, dest="mem", default=0)
+        group.add_argument("--dynet-mem", dest="mem", default=0)
         group.add_argument("--dynet-gpus", type=int, dest="mem", default=0)
         group.add_argument("--dynet-l2", type=float, dest="l2", default=0.0)
         group.add_argument("--dynet-weight-decay", type=float, dest="weight_decay", default=0.0)
