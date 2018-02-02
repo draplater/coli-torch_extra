@@ -236,9 +236,22 @@ class DependencyParserBase(object):
         cls.add_common_arguments(predict_subparser)
         predict_subparser.set_defaults(func=cls.predict_with_parser)
 
+        eval_subparser = sub_parsers.add_parser("eval")
+        eval_subparser.add_argument("--data-format", dest="data_format",
+                                    choices=cls.get_data_formats(),
+                                    default=cls.default_data_format_name)
+        eval_subparser.add_argument("gold")
+        eval_subparser.add_argument("system")
+        eval_subparser.set_defaults(func=cls.eval_only)
+
     @classmethod
     def get_training_scheduler(cls, train=None, dev=None, test=None):
         return TrainingScheduler(cls.train_parser, cls, train, dev, test)
+
+    @classmethod
+    def eval_only(cls, options):
+        DataFormatClass = cls.get_data_formats()[options.data_format]
+        DataFormatClass.evaluate_with_external_program(options.gold, options.system)
 
     @classmethod
     def get_next_arg_parser(cls, stage, options):
