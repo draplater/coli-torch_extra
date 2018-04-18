@@ -103,7 +103,8 @@ class DependencyParserBase(object):
 
     @classmethod
     def train_parser(cls, options, data_train=None, data_dev=None, data_test=None):
-        set_proc_name(options.title)
+        if sys.platform.startswith("linux"):
+            set_proc_name(options.title)
         ensure_dir(options.output)
         path = os.path.join(options.output, "{}_{}_train.log".format(options.title,
                                                                      int(time.time())))
@@ -123,6 +124,11 @@ class DependencyParserBase(object):
         except OSError:
             pass
 
+        cls.repeat_train_and_validate(data_train, data_dev, options)
+
+    @classmethod
+    def repeat_train_and_validate(cls, data_train, data_devs, options):
+        DataFormatClass = cls.get_data_formats()[options.data_format]
         parser = cls(options, data_train)
         random_obj = random.Random(1)
         for epoch in range(options.epochs):
