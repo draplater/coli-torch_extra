@@ -59,6 +59,7 @@ class DependencyParserBase(object):
                            required=True)
         group.add_argument("--dev", dest="conll_dev", help="Annotated CONLL dev file", metavar="FILE", nargs="+",
                            required=True)
+        group.add_argument("--test", dest="conll_test", help="Annotated CONLL test file", metavar="FILE")
         group.add_argument("--outdir", type=str, dest="output", required=True)
         group.add_argument("--max-save", type=int, dest="max_save", default=100)
         group.add_argument("--model", dest="model", help="Load/Save model file", metavar="FILE", default="model.")
@@ -68,9 +69,9 @@ class DependencyParserBase(object):
     @classmethod
     def add_predict_arguments(cls, arg_parser):
         group = arg_parser.add_argument_group(DependencyParserBase.__name__)
+        group.add_argument("--test", dest="conll_test", help="Annotated CONLL test file", metavar="FILE", required=True)
         group.add_argument("--output", dest="out_file", help="Output file", metavar="FILE", required=True)
         group.add_argument("--model", dest="model", help="Load/Save model file", metavar="FILE", required=True)
-        group.add_argument("--test", dest="conll_test", help="Annotated CONLL test file", metavar="FILE", required=True)
         group.add_argument("--eval", action="store_true", dest="evaluate", default=False)
         group.add_argument("--format", dest="input_format", choices=["standard", "tokenlist",
                                                                      "space", "english", "english-line"],
@@ -119,15 +120,20 @@ class DependencyParserBase(object):
         if data_dev is None:
             data_dev = {i: DataFormatClass.from_file(i, False) for i in options.conll_dev}
 
+        if data_test is None and options.conll_test is not None:
+            data_test = DataFormatClass.from_file(options.conll_test, False)
+        else:
+            data_test = None
+
         try:
             os.makedirs(options.output)
         except OSError:
             pass
 
-        cls.repeat_train_and_validate(data_train, data_dev, options)
+        return cls.repeat_train_and_validate(data_train, data_dev, data_test, options)
 
     @classmethod
-    def repeat_train_and_validate(cls, data_train, data_devs, options):
+    def repeat_train_and_validate(cls, data_train, data_devs, data_test, options):
         DataFormatClass = cls.get_data_formats()[options.data_format]
         parser = cls(options, data_train)
         random_obj = random.Random(1)
@@ -159,7 +165,7 @@ class DependencyParserBase(object):
                 # p.wait()
                 DataFormatClass.evaluate_with_external_program(gold_file, output_file)
 
-            for file_name, file_content in data_dev.items():
+            for file_name, file_content in data_devs.items():
                 try:
                     prefix, suffix = os.path.basename(file_name).rsplit(".", 1)
                 except ValueError:
