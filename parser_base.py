@@ -15,7 +15,7 @@ import time
 import graph_utils
 import tree_utils
 from common_utils import set_proc_name, ensure_dir, smart_open
-from logger import logger, log_to_file, get_logger
+from logger import logger, get_logger
 from training_scheduler import TrainingScheduler
 
 
@@ -24,6 +24,9 @@ class DependencyParserBase(object):
     DataType = None
     available_data_formats = {}
     default_data_format_name = "default"
+
+    def __init__(self, options, data_train=None):
+        self.logger = self.get_logger(options, True)
 
     @classmethod
     def get_data_formats(cls):
@@ -102,13 +105,11 @@ class DependencyParserBase(object):
 
     @classmethod
     def options_hook(cls, options):
-        local_logger = cls.get_logger(options)
-        local_logger.info('Options:\n%s', pformat(options.__dict__))
-
+        pass
 
     @classmethod
     def get_log_file(cls, options):
-        return  os.path.join(
+        return os.path.join(
             options.output,
             "{}_{}_train.log".format(options.title, int(time.time())))
 
@@ -149,13 +150,16 @@ class DependencyParserBase(object):
 
     @classmethod
     def repeat_train_and_validate(cls, data_train, data_devs, data_test, options):
-        local_logger = cls.get_logger(options)
         DataFormatClass = cls.get_data_formats()[options.data_format]
         # noinspection PyArgumentList
         parser = cls(options, data_train)
+        # backward compatibility for those parser without calling parent __init__
+        if not hasattr(parser, "logger"):
+            parser.logger = parser.get_logger(options, True)
+        parser.logger.info('Options:\n%s', pformat(options.__dict__))
         random_obj = random.Random(1)
         for epoch in range(options.epochs):
-            local_logger.info('Starting epoch %d', epoch)
+            parser.logger.info('Starting epoch %d', epoch)
             random_obj.shuffle(data_train)
             options.is_train = True
             parser.train(data_train)
@@ -199,7 +203,7 @@ class DependencyParserBase(object):
         return dev_output
 
     @classmethod
-    def predict_with_parser(cls, options, local_logger=None):
+    def predict_with_parser(cls, options):
         DataFormatClass = cls.get_data_formats()[options.data_format]
         if options.input_format == "standard":
             data_test = DataFormatClass.from_file(options.conll_test, False)
