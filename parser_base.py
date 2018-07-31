@@ -15,7 +15,7 @@ import time
 import graph_utils
 import tree_utils
 from common_utils import set_proc_name, ensure_dir, smart_open
-from logger import logger, log_to_file
+from logger import logger, log_to_file, get_logger
 from training_scheduler import TrainingScheduler
 
 
@@ -65,6 +65,8 @@ class DependencyParserBase(object):
         group.add_argument("--model", dest="model", help="Load/Save model file", metavar="FILE", default="model.")
         group.add_argument("--epochs", type=int, dest="epochs", default=30)
         group.add_argument("--lr", type=float, dest="learning_rate", default=None)
+        group.add_argument("--print-every", type=int, default=100)
+        group.add_argument("--evaluate-every", type=int, default=500)
 
     @classmethod
     def add_predict_arguments(cls, arg_parser):
@@ -100,17 +102,29 @@ class DependencyParserBase(object):
 
     @classmethod
     def options_hook(cls, options):
-        logger.info('Options:\n%s', pformat(options.__dict__))
+        local_logger = cls.get_logger(options)
+        local_logger.info('Options:\n%s', pformat(options.__dict__))
+
+
+    @classmethod
+    def get_log_file(cls, options):
+        return  os.path.join(
+            options.output,
+            "{}_{}_train.log".format(options.title, int(time.time())))
+
+    @classmethod
+    def get_logger(cls, options, log_to_console=True):
+        return get_logger(files=cls.get_log_file(options),
+                          log_to_console=log_to_console,
+                          name=options.title)
 
     @classmethod
     def train_parser(cls, options, data_train=None, data_dev=None, data_test=None):
         if sys.platform.startswith("linux"):
             set_proc_name(options.title)
-        ensure_dir(options.output)
-        path = os.path.join(options.output, "{}_{}_train.log".format(options.title,
-                                                                     int(time.time())))
-        log_to_file(path)
         logger.name = options.title
+        ensure_dir(options.output)
+
         cls.options_hook(options)
         DataFormatClass = cls.get_data_formats()[options.data_format]
 
@@ -130,15 +144,18 @@ class DependencyParserBase(object):
         except OSError:
             pass
 
-        return cls.repeat_train_and_validate(data_train, data_dev, data_test, options)
+        return cls.repeat_train_and_validate(
+            data_train, data_dev, data_test, options)
 
     @classmethod
     def repeat_train_and_validate(cls, data_train, data_devs, data_test, options):
+        local_logger = cls.get_logger(options)
         DataFormatClass = cls.get_data_formats()[options.data_format]
+        # noinspection PyArgumentList
         parser = cls(options, data_train)
         random_obj = random.Random(1)
         for epoch in range(options.epochs):
-            logger.info('Starting epoch %d', epoch)
+            local_logger.info('Starting epoch %d', epoch)
             random_obj.shuffle(data_train)
             options.is_train = True
             parser.train(data_train)
@@ -166,17 +183,23 @@ class DependencyParserBase(object):
                 DataFormatClass.evaluate_with_external_program(gold_file, output_file)
 
             for file_name, file_content in data_devs.items():
-                try:
-                    prefix, suffix = os.path.basename(file_name).rsplit(".", 1)
-                except ValueError:
-                    prefix = os.path.basename(file_name)
-                    suffix = ""
-
-                dev_output = os.path.join(options.output, '{}_epoch_{}.{}'.format(prefix, epoch + 1, suffix))
+                dev_output = cls.get_output_name(options.output, file_name, epoch)
                 predict(file_content, file_name, dev_output)
 
     @classmethod
-    def predict_with_parser(cls, options):
+    def get_output_name(cls, out_dir, file_name, epoch):
+        try:
+            prefix, suffix = os.path.basename(file_name).rsplit(".", 1)
+        except ValueError:
+            prefix = os.path.basename(file_name)
+            suffix = ""
+        dev_output = os.path.join(
+            out_dir,
+            '{}_epoch_{}.{}'.format(prefix, epoch + 1, suffix))
+        return dev_output
+
+    @classmethod
+    def predict_with_parser(cls, options, local_logger=None):
         DataFormatClass = cls.get_data_formats()[options.data_format]
         if options.input_format == "standard":
             data_test = DataFormatClass.from_file(options.conll_test, False)
