@@ -1,3 +1,4 @@
+import argparse
 import random
 
 import six
@@ -15,7 +16,7 @@ import time
 import graph_utils
 import tree_utils
 from common_utils import set_proc_name, ensure_dir, smart_open
-from logger import logger, get_logger
+from logger import logger, get_logger, default_logger
 from training_scheduler import TrainingScheduler
 
 
@@ -26,7 +27,16 @@ class DependencyParserBase(object):
     default_data_format_name = "default"
 
     def __init__(self, options, data_train=None):
-        self.logger = self.get_logger(options, True)
+        self.options = options
+        # do not log to console if not training
+        self.log_to_file = data_train is not None
+
+    @property
+    def logger(self):
+        if getattr(self, "_logger", None) is None:
+            self._logger = self.get_logger(self.options,
+                                           log_to_file=self.log_to_file)
+        return self._logger
 
     @classmethod
     def get_data_formats(cls):
@@ -114,8 +124,8 @@ class DependencyParserBase(object):
             "{}_{}_train.log".format(options.title, int(time.time())))
 
     @classmethod
-    def get_logger(cls, options, log_to_console=True):
-        return get_logger(files=cls.get_log_file(options),
+    def get_logger(cls, options, log_to_console=True, log_to_file=True):
+        return get_logger(files=cls.get_log_file(options) if log_to_file else None,
                           log_to_console=log_to_console,
                           name=options.title)
 
@@ -295,6 +305,19 @@ class DependencyParserBase(object):
     @classmethod
     def get_next_arg_parser(cls, stage, options):
         return None
+
+    @classmethod
+    def fill_missing_params(cls, options):
+        test_arg_parser = ArgumentParser()
+        cls.add_parser_arguments(test_arg_parser)
+        cls.add_common_arguments(test_arg_parser)
+        # noinspection PyUnresolvedReferences
+        for action in test_arg_parser._actions:
+            if action.default != argparse.SUPPRESS:
+                if getattr(options, action.dest, None) is None:
+                    default_logger.info(
+                        "Add missing option: {}={}".format(action.dest, action.default))
+                    setattr(options, action.dest, action.default)
 
 
 @six.add_metaclass(ABCMeta)
