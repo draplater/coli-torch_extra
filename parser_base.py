@@ -79,7 +79,6 @@ class DependencyParserBase(object):
         group.add_argument("--epochs", type=int, dest="epochs", default=30)
         group.add_argument("--lr", type=float, dest="learning_rate", default=None)
         group.add_argument("--print-every", type=int, default=100)
-        group.add_argument("--evaluate-every", type=int, default=500)
 
     @classmethod
     def add_predict_arguments(cls, arg_parser):
