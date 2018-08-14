@@ -16,7 +16,7 @@ import time
 import graph_utils
 import tree_utils
 from common_utils import set_proc_name, ensure_dir, smart_open
-from logger import logger, get_logger, default_logger
+from logger import get_logger, default_logger, log_to_file
 from training_scheduler import TrainingScheduler
 
 
@@ -116,15 +116,15 @@ class DependencyParserBase(object):
     def options_hook(cls, options):
         pass
 
-    @classmethod
-    def get_log_file(cls, options):
+    def get_log_file(self, options):
+        if getattr(self, "logger_timestamp", None) is None:
+            self.logger_timestamp = int(time.time())
         return os.path.join(
             options.output,
-            "{}_{}_train.log".format(options.title, int(time.time())))
+            "{}_{}_train.log".format(options.title, self.logger_timestamp))
 
-    @classmethod
-    def get_logger(cls, options, log_to_console=True, log_to_file=True):
-        return get_logger(files=cls.get_log_file(options) if log_to_file else None,
+    def get_logger(self, options, log_to_console=True, log_to_file=True):
+        return get_logger(files=self.get_log_file(options) if log_to_file else None,
                           log_to_console=log_to_console,
                           name=options.title)
 
@@ -132,7 +132,7 @@ class DependencyParserBase(object):
     def train_parser(cls, options, data_train=None, data_dev=None, data_test=None):
         if sys.platform.startswith("linux"):
             set_proc_name(options.title)
-        logger.name = options.title
+        default_logger.name = options.title
         ensure_dir(options.output)
 
         cls.options_hook(options)
@@ -162,9 +162,7 @@ class DependencyParserBase(object):
         DataFormatClass = cls.get_data_formats()[options.data_format]
         # noinspection PyArgumentList
         parser = cls(options, data_train)
-        # backward compatibility for those parser without calling parent __init__
-        if not hasattr(parser, "logger"):
-            parser.logger = parser.get_logger(options, True)
+        log_to_file(parser.get_log_file(options))
         parser.logger.info('Options:\n%s', pformat(options.__dict__))
         random_obj = random.Random(1)
         for epoch in range(options.epochs):
@@ -242,10 +240,10 @@ class DependencyParserBase(object):
         else:
             raise ValueError("invalid format option")
 
-        logger.info('Loading Model...')
+        default_logger.info('Loading Model...')
         options.is_train = False
         parser = cls.load(options.model, options)
-        logger.info('Model loaded')
+        parser.logger.info('Model loaded')
 
         ts = time.time()
         with smart_open(options.out_file, "w") as f_output:
@@ -254,7 +252,7 @@ class DependencyParserBase(object):
             for i in parser.predict(data_test):
                 f_output.write(i.to_string())
         te = time.time()
-        logger.info('Finished predicting and writing test. %.2f seconds.', te - ts)
+        parser.logger.info('Finished predicting and writing test. %.2f seconds.', te - ts)
 
         if options.evaluate:
             DataFormatClass.evaluate_with_external_program(options.conll_test,
