@@ -1,4 +1,5 @@
 import argparse
+import pickle
 import random
 
 import six
@@ -9,6 +10,7 @@ from pprint import pformat
 
 import os
 import sys
+import subprocess
 from abc import ABCMeta, abstractmethod, abstractproperty
 
 import time
@@ -26,7 +28,8 @@ class DependencyParserBase(object):
     available_data_formats = {}
     default_data_format_name = "default"
 
-    def __init__(self, options, data_train=None):
+    def __init__(self, options, data_train=None, *args, **kwargs):
+        super(DependencyParserBase, self).__init__()
         self.options = options
         # do not log to console if not training
         self.log_to_file = data_train is not None
@@ -111,6 +114,11 @@ class DependencyParserBase(object):
         group.add_argument("--data-format", dest="data_format",
                            choices=cls.get_data_formats(),
                            default=cls.default_data_format_name)
+        group.add_argument("--bilm-cache")
+        group.add_argument("--bilm-use-cache-only", action="store_true", default=False)
+        group.add_argument("--bilm-path", metavar="FILE")
+        group.add_argument("--bilm-stateless", action="store_true", default=False)
+        group.add_argument("--bilm-gpu", default="")
 
     @classmethod
     def options_hook(cls, options):
@@ -126,7 +134,7 @@ class DependencyParserBase(object):
     def get_logger(self, options, log_to_console=True, log_to_file=True):
         return get_logger(files=self.get_log_file(options) if log_to_file else None,
                           log_to_console=log_to_console,
-                          name=options.title)
+                          name=getattr(options, "title", "logger"))
 
     @classmethod
     def train_parser(cls, options, data_train=None, data_dev=None, data_test=None):
@@ -149,6 +157,25 @@ class DependencyParserBase(object):
         else:
             data_test = None
 
+        if options.bilm_cache is not None:
+            if not os.path.exists(options.bilm_cache):
+                train_sents = set(tuple(sent.words) for sent in data_train)
+                dev_sentences = set()
+                for one_data_dev in data_dev.values():
+                    dev_sentences.update(set(tuple(sent.words) for sent in one_data_dev))
+                if data_test is not None:
+                    dev_sentences.update(set(tuple(sent.words) for sent in data_test))
+                dev_sentences -= train_sents
+                default_logger.info("Considering {} training sentences and {} dev sentences for bilm cache".format(
+                    len(train_sents), len(dev_sentences)))
+                # avoid running tensorflow in current process
+                script_path = os.path.join(os.path.dirname(__file__), "bilm/cache_manager.py")
+                p = subprocess.Popen([sys.executable, script_path, "pickle"], stdin=subprocess.PIPE, stdout=sys.stdout, stderr=sys.stderr)
+                args = (options.bilm_path, options.bilm_cache, train_sents, dev_sentences, options.bilm_gpu)
+                p.communicate(pickle.dumps(args))
+                # pickle.dump(args, p.stdin)
+                if p.returncode != 0:
+                    raise Exception("Error when generating bilm cache.")
         try:
             os.makedirs(options.output)
         except OSError:
