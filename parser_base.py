@@ -1,6 +1,7 @@
 import argparse
 import pickle
 import random
+from typing import Generic, TypeVar, Type, Dict, List
 
 import six
 from io import open
@@ -17,32 +18,45 @@ import time
 
 import graph_utils
 import tree_utils
-from common_utils import set_proc_name, ensure_dir, smart_open
+from common_utils import set_proc_name, ensure_dir, smart_open, NoPickle
 from logger import get_logger, default_logger, log_to_file
 from training_scheduler import TrainingScheduler
 
 
-@six.add_metaclass(ABCMeta)
-class DependencyParserBase(object):
-    DataType = None
-    available_data_formats = {}
+class DataTypeBase(metaclass=ABCMeta):
+    @abstractmethod
+    def from_file(self, file_path: str, *args, **kwargs):
+        raise NotImplementedError
+
+    @abstractmethod
+    def to_string(self):
+        raise NotImplementedError
+
+
+U = TypeVar("U", bound=DataTypeBase)
+
+
+class DependencyParserBase(Generic[U], metaclass=ABCMeta):
+    DataType: Type[U] = None
+    available_data_formats: Dict[str, Type[U]] = {}
     default_data_format_name = "default"
 
     def __init__(self, options, data_train=None, *args, **kwargs):
         super(DependencyParserBase, self).__init__()
         self.options = options
         # do not log to console if not training
-        self.log_to_file = data_train is not None
+        self.log_to_file = NoPickle(data_train is not None)
 
     @property
     def logger(self):
         if getattr(self, "_logger", None) is None:
-            self._logger = self.get_logger(self.options,
-                                           log_to_file=self.log_to_file)
+            self._logger = NoPickle(
+                self.get_logger(self.options,
+                                log_to_file=self.log_to_file))
         return self._logger
 
     @classmethod
-    def get_data_formats(cls):
+    def get_data_formats(cls) -> Dict[str, Type[U]]:
         """ for old class which has "DataType" but not "available_data_formats" """
         if not cls.available_data_formats:
             return {"default": cls.DataType}
@@ -50,7 +64,7 @@ class DependencyParserBase(object):
             return cls.available_data_formats
 
     @abstractmethod
-    def train(self, graphs):
+    def train(self, graphs: List[U], *args, **kwargs):
         pass
 
     @abstractmethod
@@ -170,7 +184,8 @@ class DependencyParserBase(object):
                     len(train_sents), len(dev_sentences)))
                 # avoid running tensorflow in current process
                 script_path = os.path.join(os.path.dirname(__file__), "bilm/cache_manager.py")
-                p = subprocess.Popen([sys.executable, script_path, "pickle"], stdin=subprocess.PIPE, stdout=sys.stdout, stderr=sys.stderr)
+                p = subprocess.Popen([sys.executable, script_path, "pickle"], stdin=subprocess.PIPE, stdout=sys.stdout,
+                                     stderr=sys.stderr)
                 args = (options.bilm_path, options.bilm_cache, train_sents, dev_sentences, options.bilm_gpu)
                 p.communicate(pickle.dumps(args))
                 # pickle.dump(args, p.stdin)
