@@ -12,7 +12,7 @@ from pprint import pformat
 import os
 import sys
 import subprocess
-from abc import ABCMeta, abstractmethod, abstractproperty
+from abc import ABCMeta, abstractmethod
 
 import time
 
@@ -95,6 +95,7 @@ class DependencyParserBase(Generic[U], metaclass=ABCMeta):
         group.add_argument("--model", dest="model", help="Load/Save model file", metavar="FILE", default="model.")
         group.add_argument("--epochs", type=int, dest="epochs", default=30)
         group.add_argument("--lr", type=float, dest="learning_rate", default=None)
+        group.add_argument("--debug-cache", action="store_true", default=False)
         group.add_argument("--print-every", type=int, default=100)
 
     @classmethod
