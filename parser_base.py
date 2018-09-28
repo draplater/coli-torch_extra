@@ -4,8 +4,10 @@ from pprint import pformat
 from typing import List, Tuple, Generic, TypeVar, Type, Any
 
 import numpy as np
+from torch.nn import Module
 
 from bilm.load_vocab import BiLMVocabLoader
+from common_utils import cache_result
 from logger import log_to_file
 from parser_base import DependencyParserBase
 from data_utils.dataset import SentenceBuckets
@@ -22,6 +24,7 @@ class PyTorchParserBase(DependencyParserBase,
     bilm_vocab: BiLMVocabLoader
     external_embedding_loader: Any
     global_step: int
+    network: Module
 
     def train(self, train_bucket: SentenceBuckets,
               dev_buckets: List[Tuple[str, "DataType", U]]):
@@ -36,21 +39,34 @@ class PyTorchParserBase(DependencyParserBase,
         parser = cls(options, data_train)
         log_to_file(parser.get_log_file(options))
         parser.logger.info('Options:\n%s', pformat(options.__dict__))
-        train_buckets: SentenceBuckets = cls.bucket_class(
-            data_train, parser.statistics, parser.external_embedding_loader.lookup,
-            options.hparams.train_batch_size,
-            options.hparams.num_buckets, seed=options.hparams.seed,
-            bilm_loader=parser.bilm_vocab,
-            max_sentence_batch_size=options.hparams.max_sentence_batch_size
-        )
-        dev_buckets: List[SentenceBuckets] = [cls.bucket_class(
-            data_dev, parser.statistics, parser.external_embedding_loader.lookup,
-            options.hparams.test_batch_size,
-            options.hparams.num_valid_bkts, seed=options.hparams.seed,
-            bilm_loader=parser.bilm_vocab,
-            max_sentence_batch_size=options.hparams.max_sentence_batch_size
-        )
-            for data_dev in data_devs.values()]
+        parser.logger.info('Network:\n%s', pformat(parser.network))
+
+        @cache_result(options.output + "/" + "data_cache.pkl",
+                      enable=options.debug_cache)
+        def load_data():
+            train_bucket: SentenceBuckets = cls.bucket_class(
+                data_train, parser.statistics,
+                parser.external_embedding_loader.lookup
+                if parser.external_embedding_loader is not None else None,
+                options.hparams.train_batch_size,
+                options.hparams.num_buckets, seed=options.hparams.seed,
+                bilm_loader=parser.bilm_vocab,
+                max_sentence_batch_size=options.hparams.max_sentence_batch_size
+            )
+            dev_buckets: List[SentenceBuckets] = [cls.bucket_class(
+                data_dev, parser.statistics,
+                parser.external_embedding_loader.lookup
+                if parser.external_embedding_loader is not None else None,
+                options.hparams.test_batch_size,
+                options.hparams.num_valid_bkts, seed=options.hparams.seed,
+                bilm_loader=parser.bilm_vocab,
+                max_sentence_batch_size=options.hparams.max_sentence_batch_size
+            )
+                for data_dev in data_devs.values()]
+            return train_bucket, dev_buckets
+
+        train_buckets, dev_buckets = load_data()
+
         while True:
             current_step = parser.global_step
             if current_step > options.hparams.train_iters:
