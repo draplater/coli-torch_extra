@@ -13,7 +13,7 @@ class TFCompatibleLSTMCell(nn.Module):
     def __init__(self, input_size, hidden_size,
                  weight_initializer=I.xavier_normal_,
                  forget_bias=1.0,
-                 activation=F.tanh):
+                 activation=torch.tanh):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -35,9 +35,9 @@ class TFCompatibleLSTMCell(nn.Module):
             lstm_matrix,
             lstm_matrix.shape[1] // 4,
             dim=1)
-        c = F.sigmoid(f + self.forget_bias) * c_prev + \
-            F.sigmoid(i) * self.activation(j)
-        h = F.sigmoid(o) * self.activation(c)
+        c = torch.sigmoid(f + self.forget_bias) * c_prev + \
+            torch.sigmoid(i) * self.activation(j)
+        h = torch.sigmoid(o) * self.activation(c)
         return h, (h, c)
 
 
@@ -177,10 +177,14 @@ class LSTM(torch.nn.Module):
                 input_keep_prob,
                 recurrent_keep_prob,
                 go_forward=False)
-            layer_norm_ = LayerNorm(hidden_size * 2) if layer_norm else None
             self.add_module('forward_layer_{}'.format(layer_index), forward_layer)
             self.add_module('backward_layer_{}'.format(layer_index), backward_layer)
-            self.add_module('layer_norm_{}'.format(layer_index), layer_norm_)
+
+            if layer_norm:
+                layer_norm_ = LayerNorm(hidden_size * 2)
+                self.add_module('layer_norm_{}'.format(layer_index), layer_norm_)
+            else:
+                layer_norm_ = None
             layers.append([forward_layer, backward_layer, layer_norm_])
         self.lstm_layers = layers
 
