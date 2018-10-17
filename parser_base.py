@@ -133,7 +133,7 @@ class DependencyParserBase(Generic[U], metaclass=ABCMeta):
         group.add_argument("--bilm-use-cache-only", action="store_true", default=False)
         group.add_argument("--bilm-path", metavar="FILE")
         group.add_argument("--bilm-stateless", action="store_true", default=False)
-        group.add_argument("--bilm-gpu", default="")
+        group.add_argument("--bilm-gpu")
 
     @classmethod
     def options_hook(cls, options):
