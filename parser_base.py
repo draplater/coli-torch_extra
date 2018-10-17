@@ -1,34 +1,77 @@
 import torch
-from abc import ABCMeta, abstractproperty
+from abc import ABCMeta, abstractproperty, abstractmethod
 from pprint import pformat
-from typing import List, Tuple, Generic, TypeVar, Type, Any
+from typing import List, Tuple, Generic, TypeVar, Type, Any, Callable, Optional
 
 import numpy as np
 from torch.nn import Module
 
 from bilm.load_vocab import BiLMVocabLoader
-from common_utils import cache_result
+from common_utils import cache_result, T, NoPickle, AttrDict
+from data_utils.embedding import ExternalEmbeddingLoader
 from logger import log_to_file
 from parser_base import DependencyParserBase
-from data_utils.dataset import SentenceBuckets
+from data_utils.dataset import SentenceBuckets, SentenceFeaturesBase
 
-U = TypeVar("U", bound=SentenceBuckets)
+U = TypeVar("U", bound=SentenceFeaturesBase)
 
 
 class PyTorchParserBase(DependencyParserBase,
                         Generic[U],
                         metaclass=ABCMeta):
-    bucket_class: Type[U] = abstractproperty()
+    sentence_feature_class: Any = abstractproperty()
 
     statistics: Any
-    bilm_vocab: BiLMVocabLoader
-    external_embedding_loader: Any
-    global_step: int
     network: Module
 
+    def __init__(self, args: Any, data_train):
+        super(PyTorchParserBase, self).__init__(args, data_train)
+
+        self.args = args
+        self.hparams = args.hparams
+
+        if self.args.bilm_path is not None:
+            self.bilm_vocab = BiLMVocabLoader(self.args.bilm_path)
+        else:
+            self.bilm_vocab = None
+
+        self.external_embedding_loader = NoPickle(
+            ExternalEmbeddingLoader(args.embed_file)) \
+            if args.embed_file is not None else None
+
+        self.global_step = 0
+        self.global_epoch = 0
+
     def train(self, train_bucket: SentenceBuckets,
-              dev_buckets: List[Tuple[str, "DataType", U]]):
+              dev_buckets: List[Tuple[str, "DataType", SentenceBuckets]]):
         pass
+
+    def sentence_convert_func(self, sent_idx: int, sentence: T,
+                              padded_length: int):
+        return self.sentence_feature_class.from_sentence_obj(
+            sent_idx, sentence, self.statistics,
+            self.external_embedding_loader.lookup
+            if self.external_embedding_loader is not None else None,
+            padded_length,
+            bilm_loader=self.bilm_vocab
+        )
+
+    def create_bucket(self, data: T, is_train) -> SentenceBuckets[U]:
+        return SentenceBuckets(
+            data, self.sentence_convert_func,
+            self.hparams.train_batch_size if is_train else self.hparams.test_batch_size,
+            self.hparams.num_buckets, seed=self.hparams.seed,
+            max_sentence_batch_size=self.hparams.max_sentence_batch_size
+        )
+
+    @abstractmethod
+    def predict_bucket(self, test_buckets):
+        raise NotImplementedError
+
+    def predict(self, data_test):
+        test_buckets = self.create_bucket(data_test, False)
+        for i in self.predict_bucket(test_buckets):
+            yield i
 
     @classmethod
     def repeat_train_and_validate(cls, data_train, data_devs, data_test, options):
@@ -44,24 +87,9 @@ class PyTorchParserBase(DependencyParserBase,
         @cache_result(options.output + "/" + "data_cache.pkl",
                       enable=options.debug_cache)
         def load_data():
-            train_bucket: SentenceBuckets = cls.bucket_class(
-                data_train, parser.statistics,
-                parser.external_embedding_loader.lookup
-                if parser.external_embedding_loader is not None else None,
-                options.hparams.train_batch_size,
-                options.hparams.num_buckets, seed=options.hparams.seed,
-                bilm_loader=parser.bilm_vocab,
-                max_sentence_batch_size=options.hparams.max_sentence_batch_size
-            )
-            dev_buckets: List[SentenceBuckets] = [cls.bucket_class(
-                data_dev, parser.statistics,
-                parser.external_embedding_loader.lookup
-                if parser.external_embedding_loader is not None else None,
-                options.hparams.test_batch_size,
-                options.hparams.num_valid_bkts, seed=options.hparams.seed,
-                bilm_loader=parser.bilm_vocab,
-                max_sentence_batch_size=options.hparams.max_sentence_batch_size
-            )
+            train_bucket: SentenceBuckets = parser.create_bucket(data_train, True)
+            dev_buckets: List[SentenceBuckets] = [
+                parser.create_bucket(data_dev, False)
                 for data_dev in data_devs.values()]
             return train_bucket, dev_buckets
 
@@ -76,3 +104,18 @@ class PyTorchParserBase(DependencyParserBase,
                 [(a, b, c) for (a, b), c  # file_name, data, buckets
                  in zip(data_devs.items(), dev_buckets)]
             )
+
+    def post_load(self, new_options):
+        self.options.__dict__.update(new_options.__dict__)
+
+    @classmethod
+    def load(cls, prefix, new_options: Optional[AttrDict] = None):
+        if new_options is None:
+            new_options = AttrDict()
+
+        self = torch.load(prefix, map_location="cpu" if not new_options.gpu else "cuda")
+        self.post_load(new_options)
+        return self
+
+    def save(self, prefix, latest_filename=None):
+        torch.save(self, prefix)
