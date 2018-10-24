@@ -18,7 +18,7 @@ import time
 
 import graph_utils
 import tree_utils
-from common_utils import set_proc_name, ensure_dir, smart_open, NoPickle
+from common_utils import set_proc_name, ensure_dir, smart_open, NoPickle, cache_result
 from logger import get_logger, default_logger, log_to_file
 from training_scheduler import TrainingScheduler
 
@@ -161,16 +161,22 @@ class DependencyParserBase(Generic[U], metaclass=ABCMeta):
         cls.options_hook(options)
         DataFormatClass = cls.get_data_formats()[options.data_format]
 
-        if data_train is None:
-            data_train = DataFormatClass.from_file(options.conll_train)
+        @cache_result(options.output + "/" + "input_data_cache.pkl",
+                      enable=options.debug_cache)
+        def load_data(data_train, data_dev, data_test):
+            if data_train is None:
+                data_train = DataFormatClass.from_file(options.conll_train)
 
-        if data_dev is None:
-            data_dev = {i: DataFormatClass.from_file(i, False) for i in options.conll_dev}
+            if data_dev is None:
+                data_dev = {i: DataFormatClass.from_file(i, False) for i in options.conll_dev}
 
-        if data_test is None and options.conll_test is not None:
-            data_test = DataFormatClass.from_file(options.conll_test, False)
-        else:
-            data_test = None
+            if data_test is None and options.conll_test is not None:
+                data_test = DataFormatClass.from_file(options.conll_test, False)
+            else:
+                data_test = None
+            return data_train, data_dev, data_test
+
+        data_train, data_dev, data_test = load_data(data_train, data_dev, data_test)
 
         if options.bilm_cache is not None:
             if not os.path.exists(options.bilm_cache):
