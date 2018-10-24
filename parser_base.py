@@ -11,8 +11,9 @@ from common_utils import cache_result, T, NoPickle, AttrDict
 from data_utils.embedding import ExternalEmbeddingLoader
 from logger import log_to_file
 from parser_base import DependencyParserBase
-from data_utils.dataset import SentenceBuckets, SentenceFeaturesBase
+from data_utils.dataset import SentenceFeaturesBase, bucket_types, SentenceBucketsBase
 
+B = TypeVar("B", bound=SentenceBucketsBase)
 U = TypeVar("U", bound=SentenceFeaturesBase)
 
 
@@ -42,8 +43,9 @@ class PyTorchParserBase(DependencyParserBase,
         self.global_step = 0
         self.global_epoch = 0
 
-    def train(self, train_bucket: SentenceBuckets,
-              dev_buckets: List[Tuple[str, "DataType", SentenceBuckets]]):
+    # noinspection PyMethodOverriding
+    def train(self, train_bucket: B,
+              dev_buckets: List[Tuple[str, "DataType", B]]):
         pass
 
     def sentence_convert_func(self, sent_idx: int, sentence: T,
@@ -56,8 +58,8 @@ class PyTorchParserBase(DependencyParserBase,
             bilm_loader=self.bilm_vocab
         )
 
-    def create_bucket(self, data: T, is_train) -> SentenceBuckets[U]:
-        return SentenceBuckets(
+    def create_bucket(self, bucket_type: Type[B], data: T, is_train) -> B:
+        return bucket_type(
             data, self.sentence_convert_func,
             self.hparams.train_batch_size if is_train else self.hparams.test_batch_size,
             self.hparams.num_buckets, seed=self.hparams.seed,
@@ -69,7 +71,8 @@ class PyTorchParserBase(DependencyParserBase,
         raise NotImplementedError
 
     def predict(self, data_test):
-        test_buckets = self.create_bucket(data_test, False)
+        test_buckets = self.create_bucket(
+            bucket_types[self.hparams.bucket_type], data_test, False)
         for i in self.predict_bucket(test_buckets):
             yield i
 
@@ -84,12 +87,15 @@ class PyTorchParserBase(DependencyParserBase,
         parser.logger.info('Options:\n%s', pformat(options.__dict__))
         parser.logger.info('Network:\n%s', pformat(parser.network))
 
-        @cache_result(options.output + "/" + "data_cache.pkl",
+        @cache_result(options.output + "/" + "data_cache_buckets.pkl",
                       enable=options.debug_cache)
         def load_data():
-            train_bucket: SentenceBuckets = parser.create_bucket(data_train, True)
-            dev_buckets: List[SentenceBuckets] = [
-                parser.create_bucket(data_dev, False)
+            train_bucket: B = parser.create_bucket(
+                bucket_types[options.hparams.bucket_type],
+                data_train, True)
+            dev_buckets: List[B] = [
+                parser.create_bucket(
+                    bucket_types[options.hparams.bucket_type], data_dev, False)
                 for data_dev in data_devs.values()]
             return train_bucket, dev_buckets
 
