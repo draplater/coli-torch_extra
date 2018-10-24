@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from allennlp.nn.util import get_dropout_mask
 
@@ -7,6 +8,7 @@ import torch.nn.functional as F
 from torch.nn import LayerNorm
 
 from torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
+from torch_extra.utils import BatchIndices
 
 
 class TFCompatibleLSTMCell(nn.Module):
@@ -39,6 +41,11 @@ class TFCompatibleLSTMCell(nn.Module):
             torch.sigmoid(i) * self.activation(j)
         h = torch.sigmoid(o) * self.activation(c)
         return h, (h, c)
+
+    def extra_repr(self):
+        return 'input_size={}, hidden_size={}'.format(
+            self.input_size, self.hidden_size
+        )
 
 
 class DynamicRNN(nn.Module):
@@ -125,6 +132,58 @@ class DynamicRNN(nn.Module):
         return output_accumulator, final_state
 
 
+class DynamicRNN1D(DynamicRNN):
+    def forward(self, sequence_tensor_1d, batch_indices: BatchIndices, seqs_to_process_list):
+        batch_size = batch_indices.batch_size
+        total_timesteps = batch_indices.max_len
+        output_accumulator = sequence_tensor_1d.new_zeros(sequence_tensor_1d.size(0), self.hidden_size)
+        full_batch_previous_memory = sequence_tensor_1d.new_zeros(batch_size, self.hidden_size)
+        full_batch_previous_state = sequence_tensor_1d.data.new_zeros(batch_size, self.hidden_size)
+
+        if self.recurrent_keep_prob < 1.0:
+            recurrent_dropout_mask = get_dropout_mask(1 - self.recurrent_keep_prob,
+                                                      full_batch_previous_memory)
+        else:
+            recurrent_dropout_mask = None
+
+        if self.input_keep_prob < 1.0:
+            sequence_tensor_1d = F.dropout(sequence_tensor_1d, 1 - self.input_keep_prob, self.training)
+
+        for timestep in range(total_timesteps):
+            seqs_to_process = seqs_to_process_list[timestep]
+            if self.go_forward:
+                idxs = batch_indices.startpoints[seqs_to_process] + timestep
+            else:
+                idxs = batch_indices.endpoints[seqs_to_process] - timestep
+            # Actually get the slices of the batch which we need for the computation at this timestep.
+            previous_memory = full_batch_previous_memory[seqs_to_process].clone()
+            previous_state = full_batch_previous_state[seqs_to_process].clone()
+            timestep_input = sequence_tensor_1d[idxs]
+
+            _, (timestep_output, memory) = self.cell(timestep_input, (previous_state, previous_memory))
+
+            # Only do dropout if the dropout prob is > 0.0 and we are in training mode.
+            if recurrent_dropout_mask is not None and self.training:
+                timestep_output = timestep_output * recurrent_dropout_mask[seqs_to_process]
+
+            # We've been doing computation with less than the full batch, so here we create a new
+            # variable for the the whole batch at this timestep and insert the result for the
+            # relevant elements of the batch into it.
+            full_batch_previous_memory = full_batch_previous_memory.data.clone()
+            full_batch_previous_state = full_batch_previous_state.data.clone()
+            full_batch_previous_memory[seqs_to_process] = memory
+            full_batch_previous_state[seqs_to_process] = timestep_output
+            output_accumulator[idxs] = timestep_output
+
+        # Mimic the pytorch API by returning state in the following shape:
+        # (num_layers * num_directions, batch_size, hidden_size). As this
+        # LSTM cannot be stacked, the first dimension here is just 1.
+        final_state = (full_batch_previous_state.unsqueeze(0),
+                       full_batch_previous_memory.unsqueeze(0))
+
+        return output_accumulator, final_state
+
+
 class LSTM(torch.nn.Module):
     """
     A standard stacked Bidirectional LSTM where the LSTM layers
@@ -137,7 +196,7 @@ class LSTM(torch.nn.Module):
     input_size : int, required
         The dimension of the inputs to the LSTM.
     hidden_size : int, required
-        The dimension of the outputs of the LSTM.
+        The dimension of the outputs of the LSTM (for each direction).
     num_layers : int, required
         The number of stacked Bidirectional LSTMs to use.
     recurrent_dropout_probability: float, optional (default = 0.0)
@@ -147,6 +206,7 @@ class LSTM(torch.nn.Module):
     """
 
     cell_class = TFCompatibleLSTMCell
+    rnn_class = DynamicRNN
 
     def __init__(self,
                  input_size: int,
@@ -167,12 +227,12 @@ class LSTM(torch.nn.Module):
         layers = []
         lstm_input_size = input_size
         for layer_index in range(num_layers):
-            forward_layer = DynamicRNN(
+            forward_layer = self.rnn_class(
                 self.cell_class(lstm_input_size, hidden_size),
                 input_keep_prob,
                 recurrent_keep_prob,
                 go_forward=True)
-            backward_layer = DynamicRNN(
+            backward_layer = self.rnn_class(
                 self.cell_class(lstm_input_size, hidden_size),
                 input_keep_prob,
                 recurrent_keep_prob,
@@ -186,6 +246,7 @@ class LSTM(torch.nn.Module):
             else:
                 layer_norm_ = None
             layers.append([forward_layer, backward_layer, layer_norm_])
+            lstm_input_size = hidden_size * 2
         self.lstm_layers = layers
 
     def forward(self,  # pylint: disable=arguments-differ
@@ -193,17 +254,14 @@ class LSTM(torch.nn.Module):
                 lengths: Tensor,
                 is_sorted=False
                 ):
-        final_states = []
         original_shape = seqs.shape
         if not is_sorted:
             seqs, lengths, unsort_idx = sort_sequences(seqs, lengths, False)
+        output_seqs = seqs
         for i, (forward_layer, backward_layer, layer_norm) in enumerate(self.lstm_layers):
-            # The state is duplicated to mirror the Pytorch API for LSTMs.
-            forward_output, final_forward_state = forward_layer(seqs, lengths)
-            backward_output, final_backward_state = backward_layer(seqs, lengths)
+            forward_output, final_forward_state = forward_layer(output_seqs, lengths)
+            backward_output, final_backward_state = backward_layer(output_seqs, lengths)
             output_seqs = torch.cat([forward_output, backward_output], -1)
-            final_states.append((torch.cat(both_direction_states, -1) for both_direction_states
-                                 in zip(final_forward_state, final_backward_state)))
             if layer_norm is not None:
                 output_seqs = layer_norm(output_seqs)
         if not is_sorted:
@@ -214,3 +272,33 @@ class LSTM(torch.nn.Module):
             output_seqs = pad_timestamps_and_batches(output_seqs, original_shape)
         # noinspection PyUnboundLocalVariable
         return output_seqs
+
+
+class LSTM1D(LSTM):
+    rnn_class = DynamicRNN1D
+    # noinspection PyMethodOverriding
+    def forward(self,  # pylint: disable=arguments-differ
+                seqs: Tensor,
+                batch_indices,
+                return_all=True
+                ):
+        total_timesteps = batch_indices.max_len
+        seqs_to_process_list = []
+        for timestep in range(total_timesteps):
+            seqs_to_process = torch.gt(batch_indices.seq_lens, timestep)
+            seqs_to_process_list.append(seqs_to_process)
+
+        outputs_each_layer = []
+        output_seqs = seqs
+        for i, (forward_layer, backward_layer, layer_norm) in enumerate(self.lstm_layers):
+            forward_output, final_forward_state = forward_layer(output_seqs, batch_indices, seqs_to_process_list)
+            backward_output, final_backward_state = backward_layer(output_seqs, batch_indices, seqs_to_process_list)
+            output_seqs = torch.cat([forward_output, backward_output], -1)
+            if layer_norm is not None:
+                output_seqs = layer_norm(output_seqs)
+            outputs_each_layer.append(output_seqs)
+        if not return_all:
+            # noinspection PyUnboundLocalVariable
+            return output_seqs
+        else:
+            return torch.stack(outputs_each_layer, dim=1)
