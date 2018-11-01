@@ -134,6 +134,7 @@ class DependencyParserBase(Generic[U], metaclass=ABCMeta):
         group.add_argument("--bilm-path", metavar="FILE")
         group.add_argument("--bilm-stateless", action="store_true", default=False)
         group.add_argument("--bilm-gpu")
+        group.add_argument("--use-exception-handler", action="store_true", default=False)
 
     @classmethod
     def options_hook(cls, options):
@@ -340,8 +341,8 @@ class DependencyParserBase(Generic[U], metaclass=ABCMeta):
         eval_subparser.set_defaults(func=cls.eval_only)
 
     @classmethod
-    def get_training_scheduler(cls, train=None, dev=None, test=None):
-        return TrainingScheduler(cls.train_parser, cls, train, dev, test)
+    def get_training_scheduler(cls):
+        return TrainingScheduler(cls)
 
     @classmethod
     def eval_only(cls, options):
