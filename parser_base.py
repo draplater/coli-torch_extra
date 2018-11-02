@@ -1,15 +1,15 @@
 import torch
 from abc import ABCMeta, abstractproperty, abstractmethod
 from pprint import pformat
-from typing import List, Tuple, Generic, TypeVar, Type, Any, Callable, Optional
+from typing import List, Tuple, Generic, TypeVar, Type, Any, Optional
 
 import numpy as np
 from torch.nn import Module
 
 from bilm.load_vocab import BiLMVocabLoader
-from common_utils import cache_result, T, NoPickle, AttrDict
+from coli.basic_tools.common_utils import cache_result, T, NoPickle, AttrDict
 from data_utils.embedding import ExternalEmbeddingLoader
-from logger import log_to_file
+from coli.basic_tools.logger import log_to_file
 from parser_base import DependencyParserBase
 from data_utils.dataset import SentenceFeaturesBase, bucket_types, SentenceBucketsBase
 

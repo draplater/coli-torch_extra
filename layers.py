@@ -8,10 +8,10 @@ from torch.nn import Embedding, Module, Dropout, LayerNorm
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-from common_utils import combine_sub_options
+from coli.basic_tools.common_utils import combine_sub_options
 from torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
 from torch_extra import tf_rnn
-from logger import default_logger
+from coli.basic_tools.logger import default_logger
 
 
 def get_external_embedding(loader, freeze=True):
