@@ -9,8 +9,8 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from coli.basic_tools.common_utils import combine_sub_options
-from torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
-from torch_extra import tf_rnn
+from coli.torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
+from coli.torch_extra import tf_rnn
 from coli.basic_tools.logger import default_logger
 
 

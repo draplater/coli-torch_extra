@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 from allennlp.nn.util import get_dropout_mask
 
@@ -7,8 +6,8 @@ import torch.nn.init as I
 import torch.nn.functional as F
 from torch.nn import LayerNorm
 
-from torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
-from torch_extra.utils import BatchIndices
+from coli.torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
+from coli.torch_extra.utils import BatchIndices
 
 
 class TFCompatibleLSTMCell(nn.Module):
