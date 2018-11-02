@@ -10,7 +10,7 @@ from bilm.load_vocab import BiLMVocabLoader
 from coli.basic_tools.common_utils import cache_result, T, NoPickle, AttrDict
 from data_utils.embedding import ExternalEmbeddingLoader
 from coli.basic_tools.logger import log_to_file
-from parser_base import DependencyParserBase
+from coli.parser_tools.parser_base import DependencyParserBase
 from data_utils.dataset import SentenceFeaturesBase, bucket_types, SentenceBucketsBase
 
 B = TypeVar("B", bound=SentenceBucketsBase)
