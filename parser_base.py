@@ -8,10 +8,10 @@ from torch.nn import Module
 
 from bilm.load_vocab import BiLMVocabLoader
 from coli.basic_tools.common_utils import cache_result, T, NoPickle, AttrDict
-from data_utils.embedding import ExternalEmbeddingLoader
+from coli.data_utils.embedding import ExternalEmbeddingLoader
 from coli.basic_tools.logger import log_to_file
 from coli.parser_tools.parser_base import DependencyParserBase
-from data_utils.dataset import SentenceFeaturesBase, bucket_types, SentenceBucketsBase
+from coli.data_utils.dataset import SentenceFeaturesBase, bucket_types, SentenceBucketsBase
 
 B = TypeVar("B", bound=SentenceBucketsBase)
 U = TypeVar("U", bound=SentenceFeaturesBase)
