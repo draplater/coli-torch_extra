@@ -1,7 +1,7 @@
 import dataclasses
 import torch
 
-from graph_embedding.padding import pad_2d_values, sequence_mask, pad_3d_values
+from coli.torch_extra.graph_embedding.padding import pad_2d_values, sequence_mask, pad_3d_values
 
 
 class Batch:

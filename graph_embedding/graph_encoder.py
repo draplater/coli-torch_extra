@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from torch import nn
 from torch.nn import Embedding
 
-from graph_embedding.dataset import Batch
-from graph_embedding.reader import GraphEmbeddingStatisticsBase
+from coli.torch_extra.graph_embedding.dataset import Batch
+from coli.torch_extra.graph_embedding.reader import GraphEmbeddingStatisticsBase
 
 
 def collect_neighbor_nodes(node_embedding, indices):
