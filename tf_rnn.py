@@ -1,5 +1,4 @@
 import torch
-from allennlp.nn.util import get_dropout_mask
 
 from torch import nn, Tensor
 import torch.nn.init as I
@@ -8,6 +7,32 @@ from torch.nn import LayerNorm
 
 from coli.torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
 from coli.torch_extra.utils import BatchIndices
+
+
+def get_dropout_mask(dropout_probability: float, tensor_for_masking: torch.Tensor):
+    """
+    Computes and returns an element-wise dropout mask for a given tensor, where
+    each element in the mask is dropped out with probability dropout_probability.
+    Note that the mask is NOT applied to the tensor - the tensor is passed to retain
+    the correct CUDA tensor type for the mask.
+
+    Parameters
+    ----------
+    dropout_probability : float, required.
+        Probability of dropping a dimension of the input.
+    tensor_for_masking : torch.Tensor, required.
+
+
+    Returns
+    -------
+    A torch.FloatTensor consisting of the binary mask scaled by 1/ (1 - dropout_probability).
+    This scaling ensures expected values and variances of the output of applying this mask
+     and the original tensor are the same.
+    """
+    binary_mask = tensor_for_masking.new_tensor(torch.rand(tensor_for_masking.size()) > dropout_probability)
+    # Scale mask by 1/keep_prob to preserve output statistics.
+    dropout_mask = binary_mask.float().div(1.0 - dropout_probability)
+    return dropout_mask
 
 
 class TFCompatibleLSTMCell(nn.Module):
