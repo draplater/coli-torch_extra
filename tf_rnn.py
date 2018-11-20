@@ -6,7 +6,6 @@ import torch.nn.functional as F
 from torch.nn import LayerNorm
 
 from coli.torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
-from coli.torch_extra.utils import BatchIndices
 
 
 def get_dropout_mask(dropout_probability: float, tensor_for_masking: torch.Tensor):
@@ -156,58 +155,6 @@ class DynamicRNN(nn.Module):
         return output_accumulator, final_state
 
 
-class DynamicRNN1D(DynamicRNN):
-    def forward(self, sequence_tensor_1d, batch_indices: BatchIndices, seqs_to_process_list):
-        batch_size = batch_indices.batch_size
-        total_timesteps = batch_indices.max_len
-        output_accumulator = sequence_tensor_1d.new_zeros(sequence_tensor_1d.size(0), self.hidden_size)
-        full_batch_previous_memory = sequence_tensor_1d.new_zeros(batch_size, self.hidden_size)
-        full_batch_previous_state = sequence_tensor_1d.data.new_zeros(batch_size, self.hidden_size)
-
-        if self.recurrent_keep_prob < 1.0:
-            recurrent_dropout_mask = get_dropout_mask(1 - self.recurrent_keep_prob,
-                                                      full_batch_previous_memory)
-        else:
-            recurrent_dropout_mask = None
-
-        if self.input_keep_prob < 1.0:
-            sequence_tensor_1d = F.dropout(sequence_tensor_1d, 1 - self.input_keep_prob, self.training)
-
-        for timestep in range(total_timesteps):
-            seqs_to_process = seqs_to_process_list[timestep]
-            if self.go_forward:
-                idxs = batch_indices.startpoints[seqs_to_process] + timestep
-            else:
-                idxs = batch_indices.endpoints[seqs_to_process] - timestep
-            # Actually get the slices of the batch which we need for the computation at this timestep.
-            previous_memory = full_batch_previous_memory[seqs_to_process].clone()
-            previous_state = full_batch_previous_state[seqs_to_process].clone()
-            timestep_input = sequence_tensor_1d[idxs]
-
-            _, (timestep_output, memory) = self.cell(timestep_input, (previous_state, previous_memory))
-
-            # Only do dropout if the dropout prob is > 0.0 and we are in training mode.
-            if recurrent_dropout_mask is not None and self.training:
-                timestep_output = timestep_output * recurrent_dropout_mask[seqs_to_process]
-
-            # We've been doing computation with less than the full batch, so here we create a new
-            # variable for the the whole batch at this timestep and insert the result for the
-            # relevant elements of the batch into it.
-            full_batch_previous_memory = full_batch_previous_memory.data.clone()
-            full_batch_previous_state = full_batch_previous_state.data.clone()
-            full_batch_previous_memory[seqs_to_process] = memory
-            full_batch_previous_state[seqs_to_process] = timestep_output
-            output_accumulator[idxs] = timestep_output
-
-        # Mimic the pytorch API by returning state in the following shape:
-        # (num_layers * num_directions, batch_size, hidden_size). As this
-        # LSTM cannot be stacked, the first dimension here is just 1.
-        final_state = (full_batch_previous_state.unsqueeze(0),
-                       full_batch_previous_memory.unsqueeze(0))
-
-        return output_accumulator, final_state
-
-
 class LSTM(torch.nn.Module):
     """
     A standard stacked Bidirectional LSTM where the LSTM layers
@@ -276,11 +223,15 @@ class LSTM(torch.nn.Module):
     def forward(self,  # pylint: disable=arguments-differ
                 seqs: Tensor,
                 lengths: Tensor,
-                is_sorted=False
+                is_sorted=False,
+                return_all=False
                 ):
         original_shape = seqs.shape
         if not is_sorted:
             seqs, lengths, unsort_idx = sort_sequences(seqs, lengths, False)
+
+
+        outputs_each_layer = []
         output_seqs = seqs
         for i, (forward_layer, backward_layer, layer_norm) in enumerate(self.lstm_layers):
             forward_output, final_forward_state = forward_layer(output_seqs, lengths)
@@ -288,6 +239,10 @@ class LSTM(torch.nn.Module):
             output_seqs = torch.cat([forward_output, backward_output], -1)
             if layer_norm is not None:
                 output_seqs = layer_norm(output_seqs)
+            outputs_each_layer.append(output_seqs)
+
+        if return_all:
+            output_seqs = torch.cat(outputs_each_layer, -1)
         if not is_sorted:
             # noinspection PyUnboundLocalVariable
             output_seqs = unsort_sequences(output_seqs, unsort_idx, original_shape, unpack=False)
@@ -297,32 +252,3 @@ class LSTM(torch.nn.Module):
         # noinspection PyUnboundLocalVariable
         return output_seqs
 
-
-class LSTM1D(LSTM):
-    rnn_class = DynamicRNN1D
-    # noinspection PyMethodOverriding
-    def forward(self,  # pylint: disable=arguments-differ
-                seqs: Tensor,
-                batch_indices,
-                return_all=True
-                ):
-        total_timesteps = batch_indices.max_len
-        seqs_to_process_list = []
-        for timestep in range(total_timesteps):
-            seqs_to_process = torch.gt(batch_indices.seq_lens, timestep)
-            seqs_to_process_list.append(seqs_to_process)
-
-        outputs_each_layer = []
-        output_seqs = seqs
-        for i, (forward_layer, backward_layer, layer_norm) in enumerate(self.lstm_layers):
-            forward_output, final_forward_state = forward_layer(output_seqs, batch_indices, seqs_to_process_list)
-            backward_output, final_backward_state = backward_layer(output_seqs, batch_indices, seqs_to_process_list)
-            output_seqs = torch.cat([forward_output, backward_output], -1)
-            if layer_norm is not None:
-                output_seqs = layer_norm(output_seqs)
-            outputs_each_layer.append(output_seqs)
-        if not return_all:
-            # noinspection PyUnboundLocalVariable
-            return output_seqs
-        else:
-            return torch.stack(outputs_each_layer, dim=1)
