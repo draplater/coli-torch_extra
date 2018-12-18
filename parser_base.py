@@ -67,13 +67,13 @@ class PyTorchParserBase(DependencyParserBase,
         )
 
     @abstractmethod
-    def predict_bucket(self, test_buckets):
+    def predict_bucket(self, test_buckets, **kwargs):
         raise NotImplementedError
 
-    def predict(self, data_test):
+    def predict(self, data_test, **kwargs):
         test_buckets = self.create_bucket(
             bucket_types[self.hparams.bucket_type], data_test, False)
-        for i in self.predict_bucket(test_buckets):
+        for i in self.predict_bucket(test_buckets, **kwargs):
             yield i
 
     @classmethod
