@@ -1,3 +1,7 @@
+import os
+import pickle
+import stat
+
 import torch
 from abc import ABCMeta, abstractproperty, abstractmethod
 from pprint import pformat
@@ -10,6 +14,7 @@ from bilm.load_vocab import BiLMVocabLoader
 from coli.basic_tools.common_utils import cache_result, T, NoPickle, AttrDict
 from coli.data_utils.embedding import ExternalEmbeddingLoader
 from coli.basic_tools.logger import log_to_file
+from coli.parser_tools.magic_pack import read_script, write_script, get_codes
 from coli.parser_tools.parser_base import DependencyParserBase
 from coli.data_utils.dataset import SentenceFeaturesBase, bucket_types, SentenceBucketsBase
 
@@ -42,6 +47,7 @@ class PyTorchParserBase(DependencyParserBase,
 
         self.global_step = 0
         self.global_epoch = 0
+        self.codes = None
 
     # noinspection PyMethodOverriding
     def train(self, train_bucket: B,
@@ -119,9 +125,27 @@ class PyTorchParserBase(DependencyParserBase,
         if new_options is None:
             new_options = AttrDict()
 
-        self = torch.load(prefix, map_location="cpu" if not new_options.gpu else "cuda")
+        with open(prefix, "rb") as f:
+            read_script(f)
+            # noinspection PyUnusedLocal
+            codes = pickle.load(f)
+            entrance_class = pickle.load(f)
+            if entrance_class is not cls:
+                raise Exception(f"Not a model of {cls.__name__}")
+            self = torch.load(f, map_location="cpu" if not new_options.gpu else "cuda")
         self.post_load(new_options)
         return self
 
     def save(self, prefix, latest_filename=None):
-        torch.save(self, prefix)
+        # prevent source code change when training
+        if self.codes is None:
+            self.codes = get_codes()
+
+        with open(prefix, "wb") as f:
+            # noinspection PyTypeChecker
+            write_script(f)
+            pickle.dump(self.codes, f)
+            pickle.dump(self.__class__, f)
+            torch.save(self, f)
+        st = os.stat(prefix)
+        os.chmod(prefix, st.st_mode | stat.S_IEXEC)
