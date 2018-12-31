@@ -106,6 +106,9 @@ class PyTorchParserBase(DependencyParserBase,
             return train_bucket, dev_buckets
 
         train_buckets, dev_buckets = load_data()
+        # prevent source code change when training
+        if parser.codes is None:
+            parser.codes = get_codes()
 
         while True:
             current_step = parser.global_step
@@ -130,8 +133,8 @@ class PyTorchParserBase(DependencyParserBase,
             # noinspection PyUnusedLocal
             codes = pickle.load(f)
             entrance_class = pickle.load(f)
-            if entrance_class is not cls:
-                raise Exception(f"Not a model of {cls.__name__}")
+            if cls.__module__ != "__main__" and entrance_class is not cls:
+                raise Exception(f"Not a model of {cls}. It is a {entrance_class}")
             self = torch.load(f, map_location="cpu" if not new_options.gpu else "cuda")
         self.post_load(new_options)
         return self
