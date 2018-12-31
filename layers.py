@@ -1,17 +1,16 @@
-from typing import Type, Any
-
 import numpy as np
 import torch
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from torch import Tensor
-from torch.nn import Embedding, Module, Dropout, LayerNorm
+from torch.nn import Embedding, Module, Dropout, LayerNorm, Sequential, Linear, ReLU
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-from coli.basic_tools.common_utils import combine_sub_options
+from coli.basic_tools.dataclass_argparse import argfield, BranchSelect
 from coli.torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
 from coli.torch_extra import tf_rnn
 from coli.basic_tools.logger import default_logger
+from coli.torch_extra.transformer import TransformerEncoder
 
 
 def get_external_embedding(loader, freeze=True):
@@ -27,34 +26,17 @@ class BasicCharEmbeddingOptions(object):
     max_char: "max characters" = 20
 
 
-class ContextualUnits(object):
-    @dataclass
-    class Options(object):
-        contextual_unit: "contextual unit" = "lstm"
-        lstm_size: "LSTM dimension" = 500
-        layer_norm: "use layer normalization" = False
-        lstm_layers: "lstm layer count" = 2
-        input_keep_prob: "input keep prob" = 0.5
-        recurrent_keep_prob: "recurrent keep prob" = 0.5
-
-    @classmethod
-    def get(cls, input_size, hparams):
-        return contextual_units[hparams.contextual_unit](
-            input_size=input_size,
-            hidden_size=hparams.lstm_size,
-            num_layers=hparams.lstm_layers,
-            input_keep_prob=hparams.input_keep_prob,
-            recurrent_keep_prob=hparams.recurrent_keep_prob,
-            layer_norm=hparams.layer_norm)
-
-
 class LSTMLayer(Module):
     default_cell = torch.nn.LSTM
 
     @dataclass
-    class Options(ContextualUnits.Options):
+    class Options(object):
         """ LSTM Layer Options"""
-        pass
+        hidden_size: "LSTM dimension" = 500
+        num_layers: "lstm layer count" = 2
+        input_keep_prob: "input keep prob" = 0.5
+        recurrent_keep_prob: "recurrent keep prob" = 0.5
+        layer_norm: "use layer normalization" = False
 
     def __init__(self, input_size, hidden_size, num_layers,
                  input_keep_prob,
@@ -79,6 +61,7 @@ class LSTMLayer(Module):
         self.layer_norm = LayerNorm(hidden_size * 2) if layer_norm else None
         self.first_dropout = Dropout(1 - input_keep_prob)
         self.reset_parameters()
+        self.output_dim = hidden_size * 2
 
     def reset_parameters(self):
         for name, param in self.rnn.named_parameters():
@@ -141,17 +124,31 @@ class GRULayer(LSTMLayer):
     default_cell = torch.nn.GRU
 
 
+contextual_units = {"lstm": LSTMLayer, "gru": GRULayer,
+                    "tf-lstm": tf_rnn.LSTM, "transformer": TransformerEncoder}
+
+
+class ContextualUnits(BranchSelect):
+    branches = contextual_units
+
+    @dataclass
+    class Options(BranchSelect.Options):
+        type: "contextual unit" = argfield("lstm", choices=contextual_units)
+        lstm_options: LSTMLayer.Options = field(default_factory=LSTMLayer.Options)
+        gru_options: GRULayer.Options = field(default_factory=LSTMLayer.Options)
+        transformer_options: TransformerEncoder.Options = field(default_factory=TransformerEncoder.Options)
+
+
 class CharLSTMLayer(Module):
     @dataclass
     class Options(BasicCharEmbeddingOptions):
-        char_lstm_layers: "Character LSTM layer count" = 2
+        num_layers: "Character LSTM layer count" = 2
 
-    def __init__(self, options: Options):
+    def __init__(self, input_size, num_layers):
         super(CharLSTMLayer, self).__init__()
-        self.options = options
-        self.char_lstm = LSTMLayer(input_size=options.dim_char,
-                                   hidden_size=options.dim_char // 2,
-                                   num_layers=options.char_lstm_layers,
+        self.char_lstm = LSTMLayer(input_size=input_size,
+                                   hidden_size=input_size // 2,
+                                   num_layers=num_layers,
                                    input_keep_prob=1.0,
                                    recurrent_keep_prob=1.0
                                    )
@@ -166,44 +163,19 @@ class CharLSTMLayer(Module):
             max_characters, embed_size)
         return self.char_lstm(char_embeded_3d, char_lengths_1d,
                               return_sequence=False).view(
-            batch_size, max_sent_length, self.options.dim_char)
+            batch_size, max_sent_length, -1)
 
 
-class CharacterEmbedding(object):
-    classes = {"rnn": CharLSTMLayer}
-    default = "rnn"
+char_embeddings = {"rnn": CharLSTMLayer}
+
+
+class CharacterEmbedding(BranchSelect):
+    branches = char_embeddings
 
     @dataclass
-    class Options(combine_sub_options(classes)):
-        char_embedding_type: "Character Embedding Type" = "rnn"
-
-    @staticmethod
-    def get_char_embedding(hparams: Options):
-        if hparams.char_embedding_type == "rnn":
-            return CharLSTMLayer(hparams)
-        else:
-            assert hparams.char_embedding_type is None, \
-                "invalid char_embeded %s" % hparams.char_embedding_type
-
-
-class TimeDistributed(Module):
-    def __init__(self, inner):
-        super().__init__()
-        self.inner = inner
-
-    def forward(self, input_tensor):
-        batch_size, time_steps, features = input_tensor.shape
-        output = self.inner(
-            input_tensor.view(batch_size * time_steps, features)).view(
-            batch_size, time_steps, -1
-        )
-        return output
-
-
-contextual_units = {"lstm": LSTMLayer, "gru": GRULayer,
-                    "tf-lstm": tf_rnn.LSTM}
-ContextualUnitsOptions: Type[Any] = combine_sub_options(
-    contextual_units, name="ContextualUnitsOptions")
+    class Options(object):
+        type: "Character Embedding Type" = argfield("rnn", choices=char_embeddings)
+        rnn_options: CharLSTMLayer.Options = field(default_factory=CharLSTMLayer.Options)
 
 
 def cross_encropy(logits, labels):
@@ -212,3 +184,30 @@ def cross_encropy(logits, labels):
 
 
 loss_funcs = {"softmax": cross_encropy}
+
+
+@dataclass
+class AdvancedLearningOptions(object):
+    learning_rate: float = 1e-3
+    learning_rate_warmup_steps: int = 160
+    step_decay_factor: float = 0.5
+    step_decay_patience: int = 5
+
+
+def create_mlp(input_dim, output_dim, hidden_dims=(), activation=ReLU,
+               last_bias=True):
+    dims = [input_dim] + list(hidden_dims) + [output_dim]
+    module_list = []
+    for i in range(len(dims) - 1):
+        if i == len(dims) - 2:
+            use_bias = last_bias
+        else:
+            use_bias = True
+        linear = Linear(dims[i], dims[i+1], use_bias)
+        torch.nn.init.xavier_normal_(linear.weight)
+        torch.nn.init.zeros_(linear.bias)
+        module_list.append(linear)
+        if i != len(dims) - 2:
+            module_list.append(activation())
+    return Sequential(*module_list)
+
