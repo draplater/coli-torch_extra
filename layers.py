@@ -195,6 +195,7 @@ class AdvancedLearningOptions(object):
 
 
 def create_mlp(input_dim, output_dim, hidden_dims=(), activation=ReLU,
+               layer_norm=False,
                last_bias=True):
     dims = [input_dim] + list(hidden_dims) + [output_dim]
     module_list = []
@@ -203,11 +204,13 @@ def create_mlp(input_dim, output_dim, hidden_dims=(), activation=ReLU,
             use_bias = last_bias
         else:
             use_bias = True
-        linear = Linear(dims[i], dims[i+1], use_bias)
+        linear = Linear(dims[i], dims[i + 1], use_bias)
         torch.nn.init.xavier_normal_(linear.weight)
-        torch.nn.init.zeros_(linear.bias)
+        if use_bias:
+            torch.nn.init.zeros_(linear.bias)
         module_list.append(linear)
         if i != len(dims) - 2:
+            if layer_norm:
+                module_list.append(LayerNorm(dims[i + 1]))
             module_list.append(activation())
     return Sequential(*module_list)
-
