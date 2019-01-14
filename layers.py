@@ -20,12 +20,6 @@ def get_external_embedding(loader, freeze=True):
         torch.FloatTensor(vectors_np), freeze=freeze)
 
 
-@dataclass
-class BasicCharEmbeddingOptions(object):
-    dim_char: "Character dims" = 100
-    max_char: "max characters" = 20
-
-
 class LSTMLayer(Module):
     default_cell = torch.nn.LSTM
 
@@ -141,7 +135,7 @@ class ContextualUnits(BranchSelect):
 
 class CharLSTMLayer(Module):
     @dataclass
-    class Options(BasicCharEmbeddingOptions):
+    class Options(object):
         num_layers: "Character LSTM layer count" = 2
 
     def __init__(self, input_size, num_layers):
@@ -176,6 +170,8 @@ class CharacterEmbedding(BranchSelect):
     class Options(object):
         type: "Character Embedding Type" = argfield("rnn", choices=char_embeddings)
         rnn_options: CharLSTMLayer.Options = field(default_factory=CharLSTMLayer.Options)
+        dim_char: int = 100
+        max_char: int = 20
 
 
 def cross_encropy(logits, labels):
@@ -192,6 +188,8 @@ class AdvancedLearningOptions(object):
     learning_rate_warmup_steps: int = 160
     step_decay_factor: float = 0.5
     step_decay_patience: int = 5
+
+    clip_grad_norm: float = 0.0
 
 
 def create_mlp(input_dim, output_dim, hidden_dims=(), activation=ReLU,
