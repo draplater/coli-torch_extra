@@ -1,3 +1,4 @@
+import math
 from typing import Optional
 
 import torch
@@ -274,6 +275,7 @@ class TransformerEncoder(nn.Module):
         residual_dropout: float = 0.1
         attention_dropout: float = 0.1
         timing_dropout: float = 0.0
+        timing_method: str = "embedding"
         max_sent_len: int = 512
 
     def __init__(self, input_size,
@@ -281,7 +283,7 @@ class TransformerEncoder(nn.Module):
                  d_positional=None,
                  num_layers_position_only=0,
                  relu_dropout=0.1, residual_dropout=0.1, attention_dropout=0.1,
-                 timing_dropout=0.0,
+                 timing_dropout=0.0, timing_method="embedding",
                  max_sent_len=512):
         super().__init__()
         d_model = input_size
@@ -309,9 +311,18 @@ class TransformerEncoder(nn.Module):
 
         self.timing_dropout = FeatureDropout(timing_dropout)
 
-        # Learned embeddings
-        self.position_table = nn.Parameter(torch.FloatTensor(max_sent_len, input_size))
-        I.normal_(self.position_table)
+        if timing_method == "embedding":
+            # Learned embeddings
+            self.position_table = nn.Parameter(torch.FloatTensor(max_sent_len, input_size))
+            I.normal_(self.position_table)
+        else:
+            assert timing_method == "sinusoidal"
+            self.position_table = nn.Parameter(torch.zeros(max_sent_len, input_size), requires_grad=False)
+            position = torch.arange(0, max_sent_len).view(-1).unsqueeze(-1).float()
+            div_term = torch.exp((torch.arange(0, input_size, 2, dtype=torch.float) *
+                             -(math.log(10000.0) / input_size)))
+            self.position_table[:, 0::2] = torch.sin(position * div_term)
+            self.position_table[:, 1::2] = torch.cos(position * div_term)
 
     def forward(self, res, lengths_or_mask, use_mask=False, timing_signal=None, add_timing_signal=True):
         if not use_mask:
