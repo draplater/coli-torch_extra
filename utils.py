@@ -13,7 +13,7 @@ def convert_to_torch_tensor(inputs, device=None):
 def to_cuda(inputs):
     for i in inputs.keys():
         if isinstance(inputs[i], Tensor):
-            inputs[i] = inputs[i].cuda()
+            inputs[i] = inputs[i].pin_memory().cuda()
 
 
 def pad_and_stack_1d(tensors, to=None, constant=0):
