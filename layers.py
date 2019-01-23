@@ -7,6 +7,8 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from coli.basic_tools.dataclass_argparse import argfield, BranchSelect
+from coli.torch_extra.bert_manager import BERTPlugin
+from coli.torch_extra.elmo_manager import ELMoPlugin
 from coli.torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
 from coli.torch_extra import tf_rnn
 from coli.basic_tools.logger import default_logger
@@ -31,11 +33,13 @@ class LSTMLayer(Module):
         input_keep_prob: "input keep prob" = 0.5
         recurrent_keep_prob: "recurrent keep prob" = 0.5
         layer_norm: "use layer normalization" = False
+        bidirectional: bool = True
 
     def __init__(self, input_size, hidden_size, num_layers,
                  input_keep_prob,
                  recurrent_keep_prob,
-                 layer_norm=False
+                 layer_norm=False,
+                 bidirectional=True
                  ):
         super(LSTMLayer, self).__init__()
         if recurrent_keep_prob != 1.0:
@@ -50,12 +54,12 @@ class LSTMLayer(Module):
             num_layers=num_layers,
             batch_first=True,
             dropout=1 - input_keep_prob,
-            bidirectional=True)
+            bidirectional=bidirectional)
 
         self.layer_norm = LayerNorm(hidden_size * 2) if layer_norm else None
         self.first_dropout = Dropout(1 - input_keep_prob)
         self.reset_parameters()
-        self.output_dim = hidden_size * 2
+        self.output_dim = hidden_size * (2 if bidirectional else 1)
 
     def reset_parameters(self):
         for name, param in self.rnn.named_parameters():
@@ -184,12 +188,13 @@ loss_funcs = {"softmax": cross_encropy}
 
 @dataclass
 class AdvancedLearningOptions(object):
-    learning_rate: float = 1e-3
+    learning_rate: float = 1e-4
     learning_rate_warmup_steps: int = 160
     step_decay_factor: float = 0.5
     step_decay_patience: int = 5
 
     clip_grad_norm: float = 0.0
+    min_learning_rate: "Stop training when learning rate decrease to this value" = 1e-6
 
 
 def create_mlp(input_dim, output_dim, hidden_dims=(), activation=ReLU,
@@ -212,3 +217,16 @@ def create_mlp(input_dim, output_dim, hidden_dims=(), activation=ReLU,
                 module_list.append(LayerNorm(dims[i + 1]))
             module_list.append(activation())
     return Sequential(*module_list)
+
+
+external_contextual_embeddings = {"elmo": ELMoPlugin, "bert": BERTPlugin, "none": None}
+
+
+class ExternalContextualEmbedding(BranchSelect):
+    branches = external_contextual_embeddings
+
+    @dataclass
+    class Options(object):
+        type: "Embedding Type" = argfield("elmo", choices=list(external_contextual_embeddings.keys()))
+        elmo_options: ELMoPlugin.Options = argfield(default_factory=ELMoPlugin.Options)
+        bert_options: BERTPlugin.Options = argfield(default_factory=BERTPlugin.Options)

@@ -15,21 +15,24 @@ from torch.nn import Module, Parameter
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from bilm.load_vocab import BiLMVocabLoader
-from coli.basic_tools.common_utils import cache_result, T, NoPickle, AttrDict, Progbar
+from coli.basic_tools.common_utils import T, NoPickle, AttrDict, Progbar
 from coli.basic_tools.dataclass_argparse import argfield, pretty_format
 from coli.data_utils.embedding import ExternalEmbeddingLoader
 from coli.basic_tools.logger import log_to_file
 from coli.parser_tools.magic_pack import read_script, write_script, get_codes
 from coli.parser_tools.parser_base import DependencyParserBase
 from coli.data_utils.dataset import SentenceFeaturesBase, bucket_types, SentenceBucketsBase, HParamsBase
-from coli.torch_extra.layers import get_external_embedding, AdvancedLearningOptions
+from coli.torch_extra.bert_manager import BERTPlugin
+from coli.torch_extra.dataset import ExternalEmbeddingPlugin
+from coli.torch_extra.elmo_manager import ELMoPlugin
+from coli.torch_extra.layers import AdvancedLearningOptions, ExternalContextualEmbedding
 from coli.torch_extra.utils import to_cuda
 
 B = TypeVar("B", bound=SentenceBucketsBase)
 U = TypeVar("U", bound=SentenceFeaturesBase)
 
 OptionsType = TypeVar("OptionsType")
+STOP_TRAINING = object()
 
 
 class PyTorchParserBase(DependencyParserBase,
@@ -42,19 +45,6 @@ class PyTorchParserBase(DependencyParserBase,
 
     def __init__(self, args: Any, data_train):
         super(PyTorchParserBase, self).__init__(args, data_train)
-
-        self.args = args
-        self.hparams = args.hparams
-
-        if self.args.bilm_path is not None:
-            self.bilm_vocab = BiLMVocabLoader(self.args.bilm_path)
-        else:
-            self.bilm_vocab = None
-
-        self.external_embedding_loader = NoPickle(
-            ExternalEmbeddingLoader(args.embed_file)) \
-            if args.embed_file is not None else None
-
         self.global_step = 0
         self.global_epoch = 0
         self.codes = None
@@ -68,17 +58,17 @@ class PyTorchParserBase(DependencyParserBase,
                               padded_length: int):
         return self.sentence_feature_class.from_sentence_obj(
             sent_idx, sentence, self.statistics,
-            self.external_embedding_loader.lookup
-            if self.external_embedding_loader is not None else None,
             padded_length,
-            bilm_loader=self.bilm_vocab
+            plugins=self.plugins
         )
 
     def create_bucket(self, bucket_type: Type[B], data: T, is_train) -> B:
         return bucket_type(
             data, self.sentence_convert_func,
             self.hparams.train_batch_size if is_train else self.hparams.test_batch_size,
-            self.hparams.num_buckets, seed=self.hparams.seed,
+            self.hparams.num_buckets,
+            self.sentence_feature_class,
+            seed=self.hparams.seed,
             max_sentence_batch_size=self.hparams.max_sentence_batch_size
         )
 
@@ -103,19 +93,14 @@ class PyTorchParserBase(DependencyParserBase,
         parser.logger.info('Options:\n%s', pretty_format(options))
         parser.logger.info('Network:\n%s', pretty_format(parser.network))
 
-        @cache_result(options.output + "/" + "data_cache_buckets.pkl",
-                      enable=options.debug_cache)
-        def load_data():
-            train_bucket: B = parser.create_bucket(
-                bucket_types[options.hparams.bucket_type],
-                data_train, True)
-            dev_buckets: List[B] = [
-                parser.create_bucket(
-                    bucket_types[options.hparams.bucket_type], data_dev, False)
-                for data_dev in data_devs.values()]
-            return train_bucket, dev_buckets
+        train_buckets: B = parser.create_bucket(
+            bucket_types[options.hparams.bucket_type],
+            data_train, True)
+        dev_buckets: List[B] = [
+            parser.create_bucket(
+                bucket_types[options.hparams.bucket_type], data_dev, False)
+            for data_dev in data_devs.values()]
 
-        train_buckets, dev_buckets = load_data()
         # prevent source code change when training
         if parser.codes is None:
             parser.codes = get_codes()
@@ -124,11 +109,13 @@ class PyTorchParserBase(DependencyParserBase,
             current_step = parser.global_step
             if current_step > options.hparams.train_iters:
                 break
-            parser.train(
+            ret = parser.train(
                 train_buckets,
                 [(a, b, c) for (a, b), c  # file_name, data, buckets
                  in zip(data_devs.items(), dev_buckets)]
             )
+            if ret == STOP_TRAINING:
+                break
 
     def post_load(self, new_options):
         self.options.__dict__.update(new_options.__dict__)
@@ -175,6 +162,8 @@ class SimpleParser(PyTorchParserBase,
     class HParams(HParamsBase):
         learning: AdvancedLearningOptions = field(
             default_factory=AdvancedLearningOptions)
+        pretrained_contextual: ExternalContextualEmbedding.Options = field(
+            default_factory=ExternalContextualEmbedding.Options)
 
     @dataclass
     class Options(PyTorchParserBase.Options):
@@ -185,17 +174,15 @@ class SimpleParser(PyTorchParserBase,
         super(SimpleParser, self).__init__(args, data_train)
 
         self.args = args
-        self.hparams = args.hparams
+        self.hparams: "SimpleParser.HParams" = args.hparams
+        self.plugins = {}
 
-        if self.args.bilm_path is not None:
-            self.bilm_vocab = BiLMVocabLoader(self.args.bilm_path)
-        else:
-            self.bilm_vocab = None
+        pretrained_external_embedding = ExternalContextualEmbedding.get(self.hparams.pretrained_contextual)
+        if pretrained_external_embedding is not None:
+            self.plugins["pretrained_contextual"] = pretrained_external_embedding
 
         if args.embed_file is not None:
-            self.external_embedding_loader = NoPickle(ExternalEmbeddingLoader(args.embed_file))
-        else:
-            self.external_embedding_loader = None
+            self.plugins["external_embedding"] = ExternalEmbeddingPlugin(args.embed_file)
 
         self.global_step = 0
         self.global_epoch = 1
@@ -205,10 +192,9 @@ class SimpleParser(PyTorchParserBase,
         self.grad_clip_threshold = np.inf if self.hparams.learning.clip_grad_norm == 0 \
             else self.hparams.learning.clip_grad_norm
 
-    def get_optimizer_and_scheduler(self, trainable_params):
+    def get_optimizer_and_scheduler(self, trainable_params, **kwargs):
         optimizer = torch.optim.Adam(
-            trainable_params
-            # betas=(0.9, 0.98), eps=1e-9
+            trainable_params, **kwargs
         )
 
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -245,7 +231,7 @@ class SimpleParser(PyTorchParserBase,
         self.network.train()
         for batch_sents, feed_dict in train_data.generate_batches(
                 self.hparams.train_batch_size,
-                shuffle=True, original=True
+                shuffle=True, original=True, plugins=self.plugins
                 # sort_key_func=lambda x: x.sent_length
         ):
             if self.args.gpu:
@@ -282,6 +268,9 @@ class SimpleParser(PyTorchParserBase,
         self.progbar.finish()
         if self.global_step > self.hparams.learning.learning_rate_warmup_steps:
             self.scheduler.step(self.best_score)
+            for i, param_group in enumerate(self.optimizer.param_groups):
+                if param_group['lr'] < self.hparams.learning.min_learning_rate:
+                    return STOP_TRAINING
 
     def evaluate_when_training(self, buckets, data, filename):
         output_file = self.get_output_name(
@@ -310,6 +299,7 @@ class SimpleParser(PyTorchParserBase,
         with torch.no_grad():
             for batch_sent, feed_dict in bucket.generate_batches(
                     self.hparams.test_batch_size, original=True,
+                    plugins=self.plugins
             ):
                 if self.args.gpu:
                     to_cuda(feed_dict)
@@ -344,15 +334,17 @@ class SimpleParser(PyTorchParserBase,
         return outputs
 
     def post_load(self, new_options):
-        # TODO: without external embedding?
         self.options.__dict__.update(new_options.__dict__)
 
-        if self.options.embed_file:
+        if "external_embedding" in self.plugins:
             assert new_options.embed_file, "Embedding file is required"
-            self.external_embedding_loader = NoPickle(ExternalEmbeddingLoader(new_options.embed_file))
-            self.network.pretrained_embeddings = NoPickle(get_external_embedding(self.external_embedding_loader))
-            if self.options.gpu:
-                self.network.pretrained_embeddings.cuda()
+            self.plugins["external_embedding"].reload(new_options.embed_file, gpu=new_options.gpu)
 
-        if self.options.bilm_path:
-            self.network.load_bilm(self.options.bilm_path, self.options.gpu)
+        if "pretrained_contextual" in self.plugins:
+            plugin = self.plugins["pretrained_contextual"]
+            if isinstance(plugin, ELMoPlugin):
+                plugin.reload(self.options.bilm_path, self.options.gpu)
+            elif isinstance(plugin, BERTPlugin):
+                plugin.reload(self.options.bert_path, self.options.gpu)
+            else:
+                raise NotImplementedError(f"{plugin.__class__}")
