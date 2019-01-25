@@ -1,4 +1,5 @@
 import math
+from io import BytesIO
 from typing import Optional
 
 import torch
@@ -9,7 +10,7 @@ from torch.nn import init as init, ModuleList, LayerNorm
 import torch.nn.init as I
 
 from coli.basic_tools.dataclass_argparse import argfield
-from coli.torch_span.layers import FeatureDropout2, LayerNormalization
+from coli.torch_span.layers import FeatureDropout2
 
 
 @torch.jit.script
@@ -379,21 +380,33 @@ class TransformerEncoder(ScriptModule):
             res += timing_signal
 
         for layer in self.layers:
-                res = layer(res, sentence_mask)
+            res = layer(res, sentence_mask)
 
         return res
 
-    def __reduce__(self):
-        return self.__class__, (self.input_size,
-                 self.num_layers, self.num_heads, self.d_kv, self.d_ff,
-                 self.d_positional,
-                 self.relu_dropout, self.residual_dropout, self.attention_dropout,
-                 self.timing_dropout_value, self.timing_method,
-                 self.timing_layer_norm_value,
-                 self.max_sent_len), self.state_dict()
+    @classmethod
+    def load_func(cls, data):
+        f = BytesIO(data)
+        map_location = "cpu"
+        import inspect
+        # get map_location from stack
+        map_location_2 = inspect.currentframe().f_back.f_locals.get("map_location")
+        if map_location_2:
+            map_location = map_location_2
+        ret = torch.jit.load(f, map_location=map_location)
 
-    def __setstate__(self, state):
-        self.load_state_dict(state)
+        parameters = dict(ret.named_parameters())
+        try:
+            ret.output_dim = parameters["layers.1.w_2c.bias"].shape[-1] + parameters["layers.1.w_2p.bias"].shape[-1]
+        except KeyError:
+            ret.output_dim = parameters["layers.1.w_2.bias"].shape[-1]
+        return ret
+
+    def __reduce__(self):
+        f = BytesIO()
+        torch.jit.save(self, f)
+        f.seek(0)
+        return self.__class__.load_func, (f.read(),)
 
 
 Encoder = TransformerEncoder
