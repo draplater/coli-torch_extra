@@ -6,7 +6,7 @@ from torch.nn import Embedding, Module, Dropout, LayerNorm, Sequential, Linear, 
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-from coli.basic_tools.dataclass_argparse import argfield, BranchSelect
+from coli.basic_tools.dataclass_argparse import argfield, BranchSelect, OptionsBase
 from coli.torch_extra.bert_manager import BERTPlugin
 from coli.torch_extra.elmo_manager import ELMoPlugin
 from coli.torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
@@ -189,7 +189,7 @@ loss_funcs = {"softmax": cross_encropy}
 
 
 @dataclass
-class AdvancedLearningOptions(object):
+class AdvancedLearningOptions(OptionsBase):
     learning_rate: float = 1e-4
     learning_rate_warmup_steps: int = 160
     step_decay_factor: float = 0.5
@@ -228,7 +228,7 @@ class ExternalContextualEmbedding(BranchSelect):
     branches = external_contextual_embeddings
 
     @dataclass
-    class Options(object):
+    class Options(OptionsBase):
         type: "Embedding Type" = argfield("elmo", choices=list(external_contextual_embeddings.keys()))
         elmo_options: ELMoPlugin.Options = argfield(default_factory=ELMoPlugin.Options)
         bert_options: BERTPlugin.Options = argfield(default_factory=BERTPlugin.Options)

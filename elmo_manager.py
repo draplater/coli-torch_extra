@@ -9,7 +9,7 @@ from torch.nn import Module, Linear
 
 from bilm.load_vocab import BiLMVocabLoader
 from coli.basic_tools.common_utils import NoPickle
-from coli.basic_tools.dataclass_argparse import argfield
+from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
 from coli.data_utils.dataset import SentenceFeaturesBase
 from coli.torch_span.layers import FeatureDropout
 
@@ -54,7 +54,7 @@ def get_elmo(options_file: str,
 
 class ELMoPlugin(Module):
     @dataclass
-    class Options(object):
+    class Options(OptionsBase):
         path: str = argfield(predict_default=True)
         requires_grad: bool = False
         do_layer_norm: bool = False

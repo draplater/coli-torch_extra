@@ -4,14 +4,14 @@ from dataclasses import dataclass
 from torch.nn import Module
 
 from coli.basic_tools.common_utils import NullContextManager
-from coli.basic_tools.dataclass_argparse import argfield
+from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
 from coli.data_utils.dataset import SentenceFeaturesBase
 from coli.torch_extra.utils import pad_and_stack_1d, broadcast_gather
 
 
 class BERTPlugin(Module):
     @dataclass
-    class Options(object):
+    class Options(OptionsBase):
         bert_model: str = argfield(predict_time=True)
         lower: bool = True
 
