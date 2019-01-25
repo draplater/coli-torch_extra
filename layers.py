@@ -26,7 +26,7 @@ class LSTMLayer(Module):
     default_cell = torch.nn.LSTM
 
     @dataclass
-    class Options(object):
+    class Options(OptionsBase):
         """ LSTM Layer Options"""
         hidden_size: "LSTM dimension" = 500
         num_layers: "lstm layer count" = 2
@@ -141,7 +141,7 @@ class ContextualUnits(BranchSelect):
 
 class CharLSTMLayer(Module):
     @dataclass
-    class Options(object):
+    class Options(OptionsBase):
         num_layers: "Character LSTM layer count" = 2
 
     def __init__(self, input_size, num_layers):
@@ -173,7 +173,7 @@ class CharacterEmbedding(BranchSelect):
     branches = char_embeddings
 
     @dataclass
-    class Options(object):
+    class Options(BranchSelect.Options):
         type: "Character Embedding Type" = argfield("rnn", choices=char_embeddings)
         rnn_options: CharLSTMLayer.Options = field(default_factory=CharLSTMLayer.Options)
         dim_char: int = 100
@@ -228,7 +228,7 @@ class ExternalContextualEmbedding(BranchSelect):
     branches = external_contextual_embeddings
 
     @dataclass
-    class Options(OptionsBase):
-        type: "Embedding Type" = argfield("elmo", choices=list(external_contextual_embeddings.keys()))
+    class Options(BranchSelect.Options):
+        type: "Embedding Type" = argfield("none", choices=list(external_contextual_embeddings.keys()))
         elmo_options: ELMoPlugin.Options = argfield(default_factory=ELMoPlugin.Options)
         bert_options: BERTPlugin.Options = argfield(default_factory=BERTPlugin.Options)

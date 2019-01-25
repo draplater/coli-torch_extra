@@ -2,14 +2,14 @@ import torch
 from dataclasses import field, dataclass
 from torch.nn import Module, ModuleDict, Embedding, LayerNorm
 
-from coli.basic_tools.dataclass_argparse import argfield
+from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
 from coli.torch_extra.layers import CharacterEmbedding
 from coli.torch_span.layers import FeatureDropout, LayerNormalization
 
 
 class SentenceEmbeddings(Module):
     @dataclass
-    class Options(object):
+    class Options(OptionsBase):
         dim_word: "word embedding dim" = 100
         dim_postag: "postag embedding dim. 0 for not using postag" = 100
         dim_char: "character embedding dim. 0 for not using character" = 100
