@@ -400,6 +400,8 @@ class TransformerEncoder(ScriptModule):
             ret.output_dim = parameters["layers.1.w_2c.bias"].shape[-1] + parameters["layers.1.w_2p.bias"].shape[-1]
         except KeyError:
             ret.output_dim = parameters["layers.1.w_2.bias"].shape[-1]
+
+        ret.__class__ = cls
         return ret
 
     def __reduce__(self):
