@@ -63,6 +63,100 @@ class GraphEmbeddingStatistics(GraphEmbeddingStatisticsBase):
 
         left_edge = right_edge = None
         if sync_rule.rhs is not None:
+            if isinstance(sync_rule.rhs[0][0], str) and isinstance(sync_rule.rhs[0][1], HyperEdge):
+                left_edge = sync_rule.rhs[0][1]
+            if len(sync_rule.rhs) >= 2 and isinstance(sync_rule.rhs[1][1], HyperEdge):
+                right_edge = sync_rule.rhs[1][1]
+
+        node_to_pred_edge = {edge.nodes[0]: edge
+                             for edge in rule.rhs.edges
+                             if len(edge.nodes) == 1}
+        ret = {
+            'entities': [],
+            'external_indices': [None for _ in range(len(rule.lhs.nodes))],
+            'properties': [[] for _ in range(len(self.get_properties()))],
+            'conn_indices': [[] for _ in range(len(rule.rhs.nodes))],
+            'conn_labels': [[] for _ in range(len(rule.rhs.nodes))],
+        }
+
+        if self.use_out:
+            ret["out_conn_indices"] = [[] for _ in range(len(rule.rhs.nodes))]
+            ret["out_conn_labels"] = [[] for _ in range(len(rule.rhs.nodes))]
+
+        nodes_sorted = sorted(rule.rhs.nodes, key=lambda x: int(x.name))
+
+        # left
+        if left_edge is not None:
+            ret["left_nodes"] = [nodes_sorted.index(i) for i in left_edge.nodes]
+        else:
+            ret["left_nodes"] = None
+
+        # right
+        if right_edge is not None:
+            ret["right_nodes"] = [nodes_sorted.index(i) for i in right_edge.nodes]
+        else:
+            ret["right_nodes"] = None
+
+        for node_id, node in enumerate(nodes_sorted):
+            assert int(node.name) == node_id
+            try:
+                external_index_int = rule.lhs.nodes.index(node)
+                external_index = str(external_index_int)
+                ret["external_indices"][external_index_int] = node_id
+            except ValueError:
+                external_index = "-1"
+            pred_edge = node_to_pred_edge.get(node)
+            lemma = pos = sense = "None"
+            if left_edge is not None and pred_edge == left_edge:
+                lemma = "__LEFT__"
+            elif right_edge is not None and pred_edge == right_edge:
+                lemma = "__RIGHT__"
+            elif pred_edge is not None:
+                assert pred_edge.is_terminal
+                lemma, pos, sense = strip_category(pred_edge.label, return_tuple=True)
+            node_int = statistics.words.update_and_get_id(lemma, allow_new=allow_new)
+            ret["entities"].append(node_int)
+            ret["properties"][0].append(statistics.postags.update_and_get_id(pos, allow_new=allow_new))
+            ret["properties"][1].append(statistics.senses.update_and_get_id(sense, allow_new=allow_new))
+            ret["properties"][2].append(
+                statistics.external_index.update_and_get_id(external_index, allow_new=allow_new))
+
+            ret["conn_indices"][node_id].append(node_id)
+            ret["conn_labels"][node_id].append(statistics.conn_labels.update_and_get_id("Self", allow_new=allow_new))
+
+            if self.use_out:
+                ret["out_conn_indices"][node_id].append(node_id)
+                ret["out_conn_labels"][node_id].append(statistics.conn_labels.update_and_get_id("Self", allow_new=allow_new))
+
+            for edge in rule.rhs.edges:
+                if len(edge.nodes) >= 2 and node == edge.nodes[0]:
+                    label = edge.label
+                    if edge == left_edge:
+                        label = "__LEFT__"
+                    elif edge == right_edge:
+                        label = "__RIGHT__"
+                    else:
+                        assert edge.is_terminal
+                    for other_node in edge.nodes[1:]:
+                        other_node_id = int(other_node.name)
+                        ret["conn_indices" if not self.use_out else "out_conn_indices"][node_id].append(other_node_id)
+                        ret["conn_labels" if not self.use_out else "out_conn_labels"][node_id].append(
+                            statistics.conn_labels.update_and_get_id(
+                                label, allow_new=allow_new))
+                        ret["conn_indices"][other_node_id].append(node_id)
+                        ret["conn_labels"][other_node_id].append(
+                            statistics.conn_labels.update_and_get_id(
+                                label, allow_new=allow_new))
+        return ret
+
+    def read_subgraph_and_update(self, sync_rule: CFGRule,
+                                  allow_new=True):
+        statistics = self
+        rule = sync_rule.hrg
+        assert rule is not None
+
+        left_edge = right_edge = None
+        if sync_rule.rhs is not None:
             if isinstance(sync_rule.rhs[0][1], HyperEdge):
                 left_edge = sync_rule.rhs[0][1]
             if len(sync_rule.rhs) >= 2 and isinstance(sync_rule.rhs[1][1], HyperEdge):
