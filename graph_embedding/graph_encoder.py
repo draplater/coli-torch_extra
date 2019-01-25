@@ -22,8 +22,8 @@ def collect_neighbor_nodes(node_embedding, indices):
     #     output[i][j][k][l] = \
     #       node_embedding[i][indices_[i][j * num_neighbors + k][l]][l] = \
     #         node_embedding[i][indices[i][j][k]][l]
-    return node_embedding.gather(1, indices_) \
-        .view(batch_size, num_nodes, -1, feature_dim)
+    gathered = node_embedding.gather(1, indices_)
+    return gathered.view(batch_size, num_nodes, -1, feature_dim)
 
 
 class Highway(nn.Module):
@@ -74,7 +74,7 @@ class GraphRNNEncoder(nn.Module):
     @dataclass
     class Options(object):
         use_property_embeddings: bool = True
-        num_rnn_layers: int = 3
+        num_rnn_layers: int = 2
         dropout_rate: float = 0.33
         word_vector_trainable: bool = True
         model_hidden_size: int = 256
@@ -89,7 +89,7 @@ class GraphRNNEncoder(nn.Module):
         use_highway: bool = False
         num_highway_layers: int = 2
 
-        use_attention: bool = False
+        use_attention: bool = True
 
     def __init__(self, options: Options,
                  statistics: GraphEmbeddingStatisticsBase):
@@ -291,7 +291,7 @@ class GraphRNNEncoder(nn.Module):
             x_neigh_prev_hidden_uni = x_neigh_prev_hidden.sum(-2)
         return x_neigh_prev_hidden_uni
 
-    def forward(self, batch: Batch):
+    def forward(self, batch: Batch, hidden_vector=None):
         # shape: [batch_size, max_num_nodes, node_embedding_dim]
         entity_embedding = self.compute_entity_embedding(batch)
         # shape: [batch_size, max_num_nodes, hidden_size]
@@ -310,7 +310,8 @@ class GraphRNNEncoder(nn.Module):
 
         batch_size, max_num_nodes = batch.entity_labels.size()
         hidden_shape = [batch_size, max_num_nodes, self.hidden_size]
-        hidden_vector = torch.zeros(hidden_shape, device=entity_embedding.device)
+        if hidden_vector is None:
+            hidden_vector = torch.zeros(hidden_shape, device=entity_embedding.device)
         cell_vector = torch.zeros(hidden_shape, device=entity_embedding.device)
 
         graph_embeddings = []
@@ -324,13 +325,13 @@ class GraphRNNEncoder(nn.Module):
 
             if self.use_out:
                 out_neigh_prev_hidden = self.compute_neighbor_hidden(hidden_vector,
-                                                                 batch.out_conn_indices,
-                                                                 batch.out_conn_mask,
-                                                                 batch.entities_mask)
+                                                                     batch.out_conn_indices,
+                                                                     batch.out_conn_mask,
+                                                                     batch.entities_mask)
+                context = (neigh_embeddings, neigh_prev_hidden, out_neigh_embeddings, out_neigh_prev_hidden)
             else:
                 out_neigh_embeddings = None
-
-            context = (neigh_embeddings, neigh_prev_hidden, out_neigh_embeddings, out_neigh_prev_hidden)
+                context = (neigh_embeddings, neigh_prev_hidden)
 
             input_gate = self.input_gate(*context)
             output_gate = self.output_gate(*context)
