@@ -1,3 +1,5 @@
+from typing import List
+
 import torch
 from torch import Tensor
 import torch.nn.functional as F
@@ -16,25 +18,40 @@ def to_cuda(inputs):
             inputs[i] = inputs[i].pin_memory().cuda()
 
 
-def pad_and_stack_1d(tensors, to=None, constant=0):
-    if to is None:
-        to = max(i.size(0) for i in tensors)
+@torch.jit.script
+def pad_and_stack_1d(tensors: List[Tensor], to: int = -1, constant: int = 0):
+    if to == -1:
+        for i in range(len(tensors)):
+            tmp = tensors[i].size(0)
+            if tmp > to:
+                to = tmp
     shape = (len(tensors), to) + tensors[0].shape[1:]
     result = torch.full(shape, constant, dtype=tensors[0].dtype)
-    for idx, tensor in enumerate(tensors):
-        result[idx, :tensor.shape[0]] = tensor
+    for i in range(len(tensors)):
+        tensor = tensors[i]
+        result[i, :tensor.size(0)] = tensor
     return result
 
 
-def pad_and_stack_2d(tensors, to_1=None, to_2=None, constant=0):
-    if to_1 is None:
-        to_1 = max(i.size(0) for i in tensors)
-    if to_2 is None:
-        to_2 = max(i.size(1) for i in tensors)
+@torch.jit.script
+def pad_and_stack_2d(tensors: List[Tensor], to_1: int = -1, to_2: int = -1, constant: int = 0):
+    if to_1 == -1:
+        for i in range(len(tensors)):
+            tmp = tensors[i].size(0)
+            if tmp > to_1:
+                to_1 = tmp
+
+    if to_2 == -1:
+        for i in range(len(tensors)):
+            tmp = tensors[i].size(1)
+            if tmp > to_2:
+                to_2 = tmp
+
     shape = (len(tensors), to_1, to_2) + tensors[0].shape[2:]
     result = torch.full(shape, constant, dtype=tensors[0].dtype)
-    for idx, tensor in enumerate(tensors):
-        result[idx, :tensor.shape[0], :tensor.shape[1]] = tensor
+    for i in range(len(tensors)):
+        tensor = tensors[i]
+        result[i, :tensor.size(0), :tensor.size(1)] = tensor
     return result
 
 
