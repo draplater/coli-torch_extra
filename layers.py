@@ -33,12 +33,14 @@ class LSTMLayer(Module):
         input_keep_prob: "input keep prob" = 0.5
         recurrent_keep_prob: "recurrent keep prob" = 0.5
         layer_norm: "use layer normalization" = False
+        first_dropout: "input dropout" = 0
         bidirectional: bool = True
 
     def __init__(self, input_size, hidden_size, num_layers,
                  input_keep_prob,
                  recurrent_keep_prob,
                  layer_norm=False,
+                 first_dropout=0,
                  bidirectional=True
                  ):
         super(LSTMLayer, self).__init__()
@@ -57,7 +59,7 @@ class LSTMLayer(Module):
             bidirectional=bidirectional)
 
         self.layer_norm = LayerNorm(hidden_size * 2) if layer_norm else None
-        self.first_dropout = Dropout(1 - input_keep_prob)
+        self.first_dropout = Dropout(first_dropout)
         self.reset_parameters()
         self.output_dim = hidden_size * (2 if bidirectional else 1)
 
