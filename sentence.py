@@ -19,6 +19,7 @@ class SentenceEmbeddings(Module):
             default_factory=CharacterEmbedding.Options)
         input_layer_norm: "Use layer norm on input embeddings" = True
         mode: str = argfield("concat", choices=["add", "concat"])
+        replace_unk_with_chars: bool = False
 
     def __init__(self,
                  hparams: "SentenceEmbeddings.Options",
@@ -45,17 +46,17 @@ class SentenceEmbeddings(Module):
             self.pos_dropout = FeatureDropout(hparams.postag_dropout)
             input_dims.append(hparams.dim_postag)
 
-        if "pretrained_contextual" in self.plugins:
-            input_dims.append(self.plugins["pretrained_contextual"].output_dim)
-            self.character_lookup = self.char_embeded = None
-        elif hparams.dim_char > 0:
+        if hparams.dim_char > 0:
             self.bilm = None
             self.character_lookup = Embedding(len(statistics.characters), hparams.dim_char)
             self.char_embeded = CharacterEmbedding.get(hparams.character_embedding, input_size=hparams.dim_char)
-            input_dims.append(hparams.dim_char)
-        else:
-            self.bilm = None
-            self.character_lookup = self.char_embeded = None
+            if not hparams.replace_unk_with_chars:
+                input_dims.append(hparams.dim_char)
+            else:
+                assert hparams.dim_word == hparams.dim_char
+
+        for plugin in self.plugins.values():
+            input_dims.append(plugin.output_dim)
 
         if hparams.mode == "concat":
             self.output_dim = sum(input_dims)
@@ -76,43 +77,36 @@ class SentenceEmbeddings(Module):
         if self.character_lookup is not None:
             torch.nn.init.xavier_normal_(self.character_lookup.weight.data)
 
-    def forward(self, inputs):
-        # input embedding
-        # word
+    def forward(self, inputs, unk_idx=1):
+        all_features = []
 
-        if self.hparams.dim_word != 0:
-            words = inputs.words
-            word_embeded = self.word_embeddings(words)
-
-            if "external_embedding" in self.plugins:
-                external_embedding = self.plugins["external_embedding"]
-                pretrained_word_embeded = external_embedding(inputs)
-                word_embeded += pretrained_word_embeded
-        else:
-            word_embeded = None
-
-        # pos
-        if self.hparams.dim_postag != 0:
-            pos_embeded = self.pos_embeddings(inputs.postags)
-        else:
-            pos_embeded = None
-
-        # character
-        # batch_size, bucket_size, word_length, embedding_dims
-        if "pretrained_contextual" in self.plugins:
-            pretrained_contextual = self.plugins["pretrained_contextual"]
-            word_embeded_by_char = pretrained_contextual(inputs)
-        elif self.hparams.dim_char:
+        if self.hparams.dim_char:
             # use character embedding instead
             # batch_size, bucket_size, word_length, embedding_dims
             char_embeded_4d = self.character_lookup(inputs.chars)
             word_embeded_by_char = self.char_embeded(inputs.word_lengths,
                                                      char_embeded_4d)
-        else:
-            word_embeded_by_char = None
+            if not self.hparams.replace_unk_with_chars:
+                all_features.append(word_embeded_by_char)
 
-        all_features = list(filter(lambda x: x is not None,
-                            [word_embeded, pos_embeded, word_embeded_by_char]))
+        if self.hparams.dim_word != 0:
+            word_embedding = self.word_dropout(self.word_embeddings(inputs.words))
+            if self.hparams.dim_char and self.hparams.replace_unk_with_chars:
+                unk = inputs.words.eq(unk_idx)
+                # noinspection PyUnboundLocalVariable
+                unk_word_embeded_by_char = word_embeded_by_char[unk]
+                word_embedding[unk] = unk_word_embeded_by_char
+            all_features.append(word_embedding)
+
+        if self.hparams.dim_postag != 0:
+            all_features.append(self.pos_dropout(self.pos_embeddings(inputs.postags)))
+
+        for plugin in self.plugins.values():
+            plugin_output = plugin(inputs)
+            # FIXME: remove this ugly tweak
+            if plugin_output.shape[1] == inputs.words.shape[1] + 2:
+                plugin_output = plugin_output[:, 1:-1]
+            all_features.append(plugin_output)
 
         if self.mode == "concat":
             total_input_embeded = torch.cat(all_features, -1)
