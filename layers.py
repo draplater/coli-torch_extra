@@ -31,7 +31,7 @@ class LSTMLayer(Module):
         hidden_size: "LSTM dimension" = 500
         num_layers: "lstm layer count" = 2
         input_keep_prob: "input keep prob" = 0.5
-        recurrent_keep_prob: "recurrent keep prob" = 0.5
+        recurrent_keep_prob: "recurrent keep prob" = 1
         layer_norm: "use layer normalization" = False
         first_dropout: "input dropout" = 0
         bidirectional: bool = True
@@ -125,7 +125,8 @@ class GRULayer(LSTMLayer):
 
 
 contextual_units = {"lstm": LSTMLayer, "gru": GRULayer,
-                    "tf-lstm": tf_rnn.LSTM, "transformer": TransformerEncoder}
+                    "tflstm": tf_rnn.LSTM,
+                    "transformer": TransformerEncoder}
 
 
 class ContextualUnits(BranchSelect):
@@ -135,6 +136,7 @@ class ContextualUnits(BranchSelect):
     class Options(BranchSelect.Options):
         type: "contextual unit" = argfield("lstm", choices=contextual_units)
         lstm_options: LSTMLayer.Options = field(default_factory=LSTMLayer.Options)
+        tflstm_options: LSTMLayer.Options = field(default_factory=LSTMLayer.Options)
         gru_options: GRULayer.Options = field(default_factory=LSTMLayer.Options)
         transformer_options: TransformerEncoder.Options = field(default_factory=TransformerEncoder.Options)
 
@@ -143,8 +145,9 @@ class CharLSTMLayer(Module):
     @dataclass
     class Options(OptionsBase):
         num_layers: "Character LSTM layer count" = 2
+        dropout: "Character Embedding Dropout" = 0
 
-    def __init__(self, input_size, num_layers):
+    def __init__(self, input_size, num_layers, dropout):
         super(CharLSTMLayer, self).__init__()
         self.char_lstm = LSTMLayer(input_size=input_size,
                                    hidden_size=input_size // 2,
@@ -199,7 +202,10 @@ class AdvancedLearningOptions(OptionsBase):
     min_learning_rate: "Stop training when learning rate decrease to this value" = 1e-6
 
 
-def create_mlp(input_dim, output_dim, hidden_dims=(), activation=ReLU,
+def create_mlp(input_dim, output_dim,
+               hidden_dims=(),
+               dropout=0,
+               activation=ReLU,
                layer_norm=False,
                last_bias=True):
     dims = [input_dim] + list(hidden_dims) + [output_dim]
@@ -217,6 +223,8 @@ def create_mlp(input_dim, output_dim, hidden_dims=(), activation=ReLU,
         if i != len(dims) - 2:
             if layer_norm:
                 module_list.append(LayerNorm(dims[i + 1]))
+            if dropout != 0:
+                module_list.append(Dropout(dropout))
             module_list.append(activation())
     return Sequential(*module_list)
 
