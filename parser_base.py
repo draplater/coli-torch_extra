@@ -17,27 +17,24 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from coli.basic_tools.common_utils import T, NoPickle, AttrDict, Progbar
 from coli.basic_tools.dataclass_argparse import argfield, pretty_format
-from coli.data_utils.embedding import ExternalEmbeddingLoader
 from coli.basic_tools.logger import log_to_file
 from coli.parser_tools.magic_pack import read_script, write_script, get_codes
-from coli.parser_tools.parser_base import DependencyParserBase
-from coli.data_utils.dataset import SentenceFeaturesBase, bucket_types, SentenceBucketsBase, HParamsBase
+from coli.parser_tools.parser_base import DependencyParserBase, DF
+from coli.data_utils.dataset import SentenceFeaturesBase, bucket_types, SentenceBucketsBase, HParamsBase, DataFormatBase
 from coli.torch_extra.bert_manager import BERTPlugin
 from coli.torch_extra.dataset import ExternalEmbeddingPlugin
 from coli.torch_extra.elmo_manager import ELMoPlugin
 from coli.torch_extra.layers import AdvancedLearningOptions, ExternalContextualEmbedding
 from coli.torch_extra.utils import to_cuda
 
-B = TypeVar("B", bound=SentenceBucketsBase)
-U = TypeVar("U", bound=SentenceFeaturesBase)
+BK = TypeVar("BK", bound=SentenceBucketsBase)
+SF = TypeVar("SF", bound=SentenceFeaturesBase)
 
 OptionsType = TypeVar("OptionsType")
 STOP_TRAINING = object()
 
 
-class PyTorchParserBase(DependencyParserBase,
-                        Generic[U],
-                        metaclass=ABCMeta):
+class PyTorchParserBase(Generic[DF, SF], DependencyParserBase[DF], metaclass=ABCMeta):
     sentence_feature_class: Any = abstractproperty()
 
     statistics: Any
@@ -50,8 +47,8 @@ class PyTorchParserBase(DependencyParserBase,
         self.codes = None
 
     # noinspection PyMethodOverriding
-    def train(self, train_bucket: B,
-              dev_buckets: List[Tuple[str, "DataType", B]]):
+    def train(self, train_bucket: BK,
+              dev_buckets: List[Tuple[str, List[DF], BK]]):
         pass
 
     def sentence_convert_func(self, sent_idx: int, sentence: T,
@@ -62,7 +59,7 @@ class PyTorchParserBase(DependencyParserBase,
             plugins=self.plugins
         )
 
-    def create_bucket(self, bucket_type: Type[B], data: T, is_train) -> B:
+    def create_bucket(self, bucket_type: Type[BK], data: T, is_train) -> BK:
         return bucket_type(
             data, self.sentence_convert_func,
             self.hparams.train_batch_size if is_train else self.hparams.test_batch_size,
@@ -93,10 +90,10 @@ class PyTorchParserBase(DependencyParserBase,
         parser.logger.info('Options:\n%s', pretty_format(options))
         parser.logger.info('Network:\n%s', pretty_format(parser.network))
 
-        train_buckets: B = parser.create_bucket(
+        train_buckets: BK = parser.create_bucket(
             bucket_types[options.hparams.bucket_type],
             data_train, True)
-        dev_buckets: List[B] = [
+        dev_buckets: List[BK] = [
             parser.create_bucket(
                 bucket_types[options.hparams.bucket_type], data_dev, False)
             for data_dev in data_devs.values()]
@@ -112,7 +109,7 @@ class PyTorchParserBase(DependencyParserBase,
             ret = parser.train(
                 train_buckets,
                 [(a, b, c) for (a, b), c  # file_name, data, buckets
-                 in zip(data_devs.items(), dev_buckets)]
+                in zip(data_devs.items(), dev_buckets)]
             )
             if ret == STOP_TRAINING:
                 break
@@ -151,8 +148,7 @@ class PyTorchParserBase(DependencyParserBase,
         os.chmod(prefix, st.st_mode | stat.S_IEXEC)
 
 
-class SimpleParser(PyTorchParserBase,
-                   Generic[OptionsType],
+class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
                    metaclass=ABCMeta):
     optimizer: Optimizer
     scheduler: ReduceLROnPlateau
@@ -182,7 +178,8 @@ class SimpleParser(PyTorchParserBase,
             self.plugins["pretrained_contextual"] = pretrained_external_embedding
 
         if args.embed_file is not None:
-            self.plugins["external_embedding"] = ExternalEmbeddingPlugin(args.embed_file)
+            self.plugins["external_embedding"] = ExternalEmbeddingPlugin(
+                args.embed_file)
 
         self.global_step = 0
         self.global_epoch = 1
@@ -237,14 +234,14 @@ class SimpleParser(PyTorchParserBase,
             if self.args.gpu:
                 to_cuda(feed_dict)
             self.schedule_lr(self.global_step)
-            self.optimizer.zero_grad()
             output = self.network(batch_sents, AttrDict(feed_dict))
-            total_loss += output.loss
+            total_loss += output.loss.detach()
             sent_count += output.sent_count
             output.loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(self.trainable_parameters, self.grad_clip_threshold)
             # noinspection PyArgumentList
             self.optimizer.step()
+            self.optimizer.zero_grad()
             if self.global_step != 0 and \
                     self.global_step % self.hparams.print_every == 0:
                 end_time = time.time()
@@ -279,11 +276,9 @@ class SimpleParser(PyTorchParserBase,
             self.args.output, filename, "best")
         sys.stdout.write("\n")
         outputs = self.predict_bucket(buckets)
-        with open(output_file, "w") as f:
-            for output in outputs:
-                f.write(output.to_string())
+        self.write_result(output_file, outputs)
         self.evaluate_and_update_best_score(
-            data, outputs, output_file, best_output_file,
+            data, filename, outputs, output_file, best_output_file,
             log_file=output_file + ".txt")
 
     @abstractmethod
@@ -307,15 +302,19 @@ class SimpleParser(PyTorchParserBase,
                 for original, parsed in zip(batch_sent, self.split_batch_result(results)):
                     yield original, parsed
 
-    def evaluate(self, gold, outputs, log_file):
+    def evaluate(self, gold, gold_file, outputs, output_file, log_file):
         data_format_class = self.get_data_formats()[self.options.data_format]
-        return data_format_class.internal_evaluate(
-            gold, outputs, log_file)
+        if getattr(data_format_class, "has_internal_evaluate_func", False):
+            return data_format_class.internal_evaluate(
+                gold, outputs, log_file, print=False)
+        else:
+            return data_format_class.evaluate_with_external_program(
+                gold_file, output_file, perf_file=log_file, print=False)
 
-    def evaluate_and_update_best_score(self, gold, outputs,
+    def evaluate_and_update_best_score(self, gold, gold_file_name, outputs,
                                        output_file, best_output_file, log_file=None):
         last_best_score = self.best_score
-        score = self.evaluate(gold, outputs, log_file)
+        score = self.evaluate(gold, gold_file_name, outputs, output_file, log_file)
         if score > last_best_score:
             self.logger.info("New best score: {:.2f} > {:.2f}, saving model...".format(
                 score, last_best_score))
@@ -340,11 +339,11 @@ class SimpleParser(PyTorchParserBase,
             assert new_options.embed_file, "Embedding file is required"
             self.plugins["external_embedding"].reload(new_options.embed_file, gpu=new_options.gpu)
 
-        if "pretrained_contextual" in self.plugins:
+        if "pretrained_contextual" in self.plugins and self.options.bilm_path is not None:
             plugin = self.plugins["pretrained_contextual"]
             if isinstance(plugin, ELMoPlugin):
                 plugin.reload(self.options.bilm_path, self.options.gpu)
             elif isinstance(plugin, BERTPlugin):
-                plugin.reload(self.options.bert_path, self.options.gpu)
+                plugin.reload(self.options.bilm_path, self.options.gpu)
             else:
                 raise NotImplementedError(f"{plugin.__class__}")
