@@ -9,7 +9,7 @@ from torch.jit import script_method, ScriptModule
 from torch.nn import init as init, ModuleList, LayerNorm
 import torch.nn.init as I
 
-from coli.basic_tools.dataclass_argparse import argfield
+from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
 from coli.torch_span.layers import FeatureDropout2
 
 
@@ -128,7 +128,7 @@ class MultiHeadAttention(ScriptModule):
     @script_method
     def split_qkv_packed(self, inp):
         batch_size, max_sent_len, feature_count = inp.shape
-        input_2d = inp.view(-1, feature_count)
+        input_2d = inp.contiguous().view(-1, feature_count)
         v_inp_repeated = input_2d.unsqueeze(0).repeat(self.n_head, 1, 1)
         qk_inp_repeated = v_inp_repeated
 
@@ -280,7 +280,7 @@ class TransformerEncoder(ScriptModule):
     __constants__ = ["partitioned", "num_layers", "layers"]
 
     @dataclass
-    class Options(object):
+    class Options(OptionsBase):
         num_layers: int = 8
         num_heads: int = 2
         d_kv: int = 32
