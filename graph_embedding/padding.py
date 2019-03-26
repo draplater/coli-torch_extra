@@ -12,9 +12,10 @@ def expand_dim(tensor, dim, length):
     return tensor.unsqueeze(dim).expand(new_size)
 
 
-def sequence_mask(lengths, maxlen=None):
-    if maxlen is None:
-        maxlen = lengths.max()
+@torch.jit.script
+def sequence_mask(lengths, maxlen: int = -1):
+    if maxlen == -1:
+        maxlen = int(lengths.max())
 
     mask = torch.arange(0, maxlen,
                         dtype=lengths.dtype, device=lengths.device)

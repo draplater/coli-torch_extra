@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from torch import nn
 from torch.nn import Embedding
 
+from coli.basic_tools.dataclass_argparse import OptionsBase
 from coli.torch_extra.graph_embedding.dataset import Batch
 from coli.torch_extra.graph_embedding.reader import GraphEmbeddingStatisticsBase
 
@@ -72,9 +73,9 @@ class GraphRNNGate(nn.Module):
 
 class GraphRNNEncoder(nn.Module):
     @dataclass
-    class Options(object):
+    class Options(OptionsBase):
         use_property_embeddings: bool = True
-        num_rnn_layers: int = 2
+        num_rnn_layers: int = 3
         dropout_rate: float = 0.33
         word_vector_trainable: bool = True
         model_hidden_size: int = 256
@@ -291,9 +292,11 @@ class GraphRNNEncoder(nn.Module):
             x_neigh_prev_hidden_uni = x_neigh_prev_hidden.sum(-2)
         return x_neigh_prev_hidden_uni
 
-    def forward(self, batch: Batch, hidden_vector=None):
+    def forward(self, batch: Batch, hidden_vector=None, entity_embeddings_extra=None):
         # shape: [batch_size, max_num_nodes, node_embedding_dim]
         entity_embedding = self.compute_entity_embedding(batch)
+        if entity_embeddings_extra is not None:
+            entity_embedding += entity_embeddings_extra
         # shape: [batch_size, max_num_nodes, hidden_size]
         neigh_embeddings = self.compute_neighbor_embedding(entity_embedding,
                                                            batch.conn_labels,
