@@ -1,47 +1,30 @@
+from io import BytesIO
+from typing import Tuple
+
 import torch
 
 from torch import nn, Tensor
 import torch.nn.init as I
 import torch.nn.functional as F
-from torch.nn import LayerNorm
+from torch.jit import script_method, ScriptModule
+from torch.nn import LayerNorm, ModuleList, Sequential
 
 from coli.torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
 
 
-def get_dropout_mask(dropout_probability: float, tensor_for_masking: torch.Tensor):
-    """
-    Computes and returns an element-wise dropout mask for a given tensor, where
-    each element in the mask is dropped out with probability dropout_probability.
-    Note that the mask is NOT applied to the tensor - the tensor is passed to retain
-    the correct CUDA tensor type for the mask.
+class TFCompatibleLSTMCell(ScriptModule):
+    __constants__ = ["forget_bias", "input_keep_prob", "recurrent_keep_prob"]
 
-    Parameters
-    ----------
-    dropout_probability : float, required.
-        Probability of dropping a dimension of the input.
-    tensor_for_masking : torch.Tensor, required.
-
-
-    Returns
-    -------
-    A torch.FloatTensor consisting of the binary mask scaled by 1/ (1 - dropout_probability).
-    This scaling ensures expected values and variances of the output of applying this mask
-     and the original tensor are the same.
-    """
-    binary_mask = tensor_for_masking.new_tensor(torch.rand(tensor_for_masking.size()) > dropout_probability)
-    # Scale mask by 1/keep_prob to preserve output statistics.
-    dropout_mask = binary_mask.float().div(1.0 - dropout_probability)
-    return dropout_mask
-
-
-class TFCompatibleLSTMCell(nn.Module):
     def __init__(self, input_size, hidden_size,
+                 input_keep_prob=1.0, recurrent_keep_prob=1.0,
                  weight_initializer=I.xavier_normal_,
                  forget_bias=1.0,
                  activation=torch.tanh):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
+        self.input_keep_prob = input_keep_prob
+        self.recurrent_keep_prob = recurrent_keep_prob
         self.weight_initializer = weight_initializer
         self.activation = activation
         self.forget_bias = forget_bias
@@ -53,8 +36,12 @@ class TFCompatibleLSTMCell(nn.Module):
         self.weight_initializer(self.linearity.weight)
         I.zeros_(self.linearity.bias)
 
-    def forward(self, inputs, state):
-        (h_prev, c_prev) = state
+    @script_method
+    def forward(self, inputs: Tensor, h_prev: Tensor, c_prev: Tensor) -> Tuple[Tensor, Tensor]:
+        if self.training and self.input_keep_prob < 1.0:
+            inputs = F.dropout(inputs, 1 - self.input_keep_prob, self.training)
+        if self.training and self.recurrent_keep_prob < 1.0:
+            h_prev = F.dropout(h_prev, 1 - self.recurrent_keep_prob, self.training)
         lstm_matrix = self.linearity(torch.cat([inputs, h_prev], 1))
         i, j, f, o = torch.split(
             lstm_matrix,
@@ -63,7 +50,7 @@ class TFCompatibleLSTMCell(nn.Module):
         c = torch.sigmoid(f + self.forget_bias) * c_prev + \
             torch.sigmoid(i) * self.activation(j)
         h = torch.sigmoid(o) * self.activation(c)
-        return h, (h, c)
+        return h, c
 
     def extra_repr(self):
         return 'input_size={}, hidden_size={}'.format(
@@ -71,37 +58,30 @@ class TFCompatibleLSTMCell(nn.Module):
         )
 
 
-class DynamicRNN(nn.Module):
+class DynamicRNN(ScriptModule):
+    __constants__ = ["hidden_size", "go_forward"]
+
     def __init__(self, cell,
-                 input_keep_prob=1.0,
-                 recurrent_keep_prob=1.0,
                  go_forward=True):
         super().__init__()
         self.cell = cell
-        self.input_keep_prob = input_keep_prob
-        self.recurrent_keep_prob = recurrent_keep_prob
         self.go_forward = go_forward
-
         self.hidden_size = self.cell.hidden_size
 
-    def forward(self, sequence_tensor, batch_lengths):
-        batch_size = sequence_tensor.shape[0]
-        total_timesteps = batch_lengths[0]
-        output_accumulator = sequence_tensor.new_zeros(batch_size, total_timesteps, self.hidden_size)
-        full_batch_previous_memory = sequence_tensor.new_zeros(batch_size, self.hidden_size)
-        full_batch_previous_state = sequence_tensor.data.new_zeros(batch_size, self.hidden_size)
+    @script_method
+    def forward(self, sequence_tensor: Tensor, batch_lengths: Tensor):
+        batch_size = int(sequence_tensor.shape[0])
+        total_timesteps = int(sequence_tensor.shape[1])
+        output_accumulator = torch.zeros([batch_size, total_timesteps, self.hidden_size],
+                                         dtype=sequence_tensor.dtype, device=sequence_tensor.device)
+        full_batch_previous_memory = torch.zeros([batch_size, self.hidden_size],
+                                                 dtype=sequence_tensor.dtype, device=sequence_tensor.device)
+        full_batch_previous_state = torch.zeros([batch_size, self.hidden_size],
+                                                dtype=sequence_tensor.dtype, device=sequence_tensor.device)
 
-        current_length_index = batch_size - 1 if self.go_forward else 0
-        if self.recurrent_keep_prob < 1.0:
-            recurrent_dropout_mask = get_dropout_mask(1 - self.recurrent_keep_prob,
-                                                      full_batch_previous_memory)
-        else:
-            recurrent_dropout_mask = None
-
-        if self.input_keep_prob < 1.0:
-            sequence_tensor = F.dropout(sequence_tensor, 1 - self.input_keep_prob, self.training)
-
+        current_length_index = (batch_size - 1) if self.go_forward else 0
         for timestep in range(total_timesteps):
+            assert current_length_index >= 0
             # The index depends on which end we start.
             index = timestep if self.go_forward else total_timesteps - timestep - 1
 
@@ -115,7 +95,7 @@ class DynamicRNN(nn.Module):
             # pass the index at which the shortest elements of the batch finish,
             # we stop picking them up for the computation.
             if self.go_forward:
-                while batch_lengths[current_length_index] <= index:
+                while int(batch_lengths[current_length_index]) <= index:
                     current_length_index -= 1
             # If we're going backwards, we are _picking up_ more indices.
             else:
@@ -123,25 +103,17 @@ class DynamicRNN(nn.Module):
                 # Second conditional: Does the next shortest sequence beyond the current batch
                 # index require computation use this timestep?
                 while current_length_index < (len(batch_lengths) - 1) and \
-                        batch_lengths[current_length_index + 1] > index:
+                        int(batch_lengths[current_length_index + 1]) > index:
                     current_length_index += 1
 
-            # Actually get the slices of the batch which we need for the computation at this timestep.
-            previous_memory = full_batch_previous_memory[0: current_length_index + 1].clone()
-            previous_state = full_batch_previous_state[0: current_length_index + 1].clone()
-            timestep_input = sequence_tensor[0: current_length_index + 1, index]
-
-            _, (timestep_output, memory) = self.cell(timestep_input, (previous_state, previous_memory))
-
-            # Only do dropout if the dropout prob is > 0.0 and we are in training mode.
-            if recurrent_dropout_mask is not None and self.training:
-                timestep_output = timestep_output * recurrent_dropout_mask[0: current_length_index + 1]
+            timestep_output, memory = self.cell(
+                sequence_tensor[0: current_length_index + 1, index],
+                full_batch_previous_state[0: current_length_index + 1],
+                full_batch_previous_memory[0: current_length_index + 1])
 
             # We've been doing computation with less than the full batch, so here we create a new
             # variable for the the whole batch at this timestep and insert the result for the
             # relevant elements of the batch into it.
-            full_batch_previous_memory = full_batch_previous_memory.data.clone()
-            full_batch_previous_state = full_batch_previous_state.data.clone()
             full_batch_previous_memory[0:current_length_index + 1] = memory
             full_batch_previous_state[0:current_length_index + 1] = timestep_output
             output_accumulator[0:current_length_index + 1, index] = timestep_output
@@ -149,13 +121,57 @@ class DynamicRNN(nn.Module):
         # Mimic the pytorch API by returning state in the following shape:
         # (num_layers * num_directions, batch_size, hidden_size). As this
         # LSTM cannot be stacked, the first dimension here is just 1.
-        final_state = (full_batch_previous_state.unsqueeze(0),
-                       full_batch_previous_memory.unsqueeze(0))
+        # final_state = (full_batch_previous_state.unsqueeze(0),
+        #                full_batch_previous_memory.unsqueeze(0))
 
-        return output_accumulator, final_state
+        return output_accumulator
 
 
-class LSTM(torch.nn.Module):
+class Identity(ScriptModule):
+    @script_method
+    def forward(self, x):
+        return x
+
+
+class LSTMLayer(ScriptModule):
+    __constants__ = ["use_layer_norm"]
+
+    def __init__(self,
+                 cell_class,
+                 input_size: int,
+                 hidden_size: int,
+                 input_keep_prob: float = 1.0,
+                 recurrent_keep_prob: float = 1.0,
+                 layer_norm=False):
+        super(LSTMLayer, self).__init__()
+        self.forward_layer = DynamicRNN(
+            cell_class(input_size, hidden_size,
+                       input_keep_prob,
+                       recurrent_keep_prob),
+            go_forward=True)
+        self.backward_layer = DynamicRNN(
+            cell_class(input_size, hidden_size,
+                       input_keep_prob,
+                       recurrent_keep_prob),
+            go_forward=False)
+        self.use_layer_norm = layer_norm
+
+        if layer_norm:
+            self.layer_norm = LayerNorm(hidden_size * 2)
+        else:
+            self.layer_norm = Identity()
+
+    @script_method
+    def forward(self, seqs, lengths):
+        forward_output = self.forward_layer(seqs, lengths)
+        backward_output = self.backward_layer(seqs, lengths)
+        output_seqs = torch.cat([forward_output, backward_output], -1)
+        if self.use_layer_norm is not None:
+            output_seqs = self.layer_norm(output_seqs)
+        return output_seqs
+
+
+class LSTM(ScriptModule):
     """
     A standard stacked Bidirectional LSTM where the LSTM layers
     are concatenated between each layer. The only difference between
@@ -177,7 +193,7 @@ class LSTM(torch.nn.Module):
     """
 
     cell_class = TFCompatibleLSTMCell
-    rnn_class = DynamicRNN
+    __constants__ = ["num_layers", "use_layer_norm", "layers"]
 
     def __init__(self,
                  input_size: int,
@@ -185,7 +201,9 @@ class LSTM(torch.nn.Module):
                  num_layers: int,
                  input_keep_prob: float = 1.0,
                  recurrent_keep_prob: float = 1.0,
-                 layer_norm=False
+                 layer_norm=False,
+                 first_dropout=0,
+                 bidirectional=True
                  ) -> None:
         super(LSTM, self).__init__()
 
@@ -193,32 +211,26 @@ class LSTM(torch.nn.Module):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
+        self.use_layer_norm = layer_norm
         self.bidirectional = True
+        self.output_dim = self.hidden_size * (2 if self.bidirectional else 1)
 
-        layers = []
         lstm_input_size = input_size
-        for layer_index in range(num_layers):
-            forward_layer = self.rnn_class(
-                self.cell_class(lstm_input_size, hidden_size),
-                input_keep_prob,
-                recurrent_keep_prob,
-                go_forward=True)
-            backward_layer = self.rnn_class(
-                self.cell_class(lstm_input_size, hidden_size),
-                input_keep_prob,
-                recurrent_keep_prob,
-                go_forward=False)
-            self.add_module('forward_layer_{}'.format(layer_index), forward_layer)
-            self.add_module('backward_layer_{}'.format(layer_index), backward_layer)
+        layers = []
 
-            if layer_norm:
-                layer_norm_ = LayerNorm(hidden_size * 2)
-                self.add_module('layer_norm_{}'.format(layer_index), layer_norm_)
-            else:
-                layer_norm_ = None
-            layers.append([forward_layer, backward_layer, layer_norm_])
+        for layer_index in range(num_layers):
+            layers.append(LSTMLayer(self.cell_class, lstm_input_size, hidden_size,
+                                    input_keep_prob, recurrent_keep_prob, layer_norm))
             lstm_input_size = hidden_size * 2
-        self.lstm_layers = layers
+
+        self.layers = ModuleList(layers)
+
+    @script_method
+    def run_rnn(self, seqs, lengths):
+        output_seqs = seqs
+        for layer in self.layers:
+            output_seqs = layer(output_seqs, lengths)
+        return output_seqs
 
     def forward(self,  # pylint: disable=arguments-differ
                 seqs: Tensor,
@@ -229,20 +241,7 @@ class LSTM(torch.nn.Module):
         original_shape = seqs.shape
         if not is_sorted:
             seqs, lengths, unsort_idx = sort_sequences(seqs, lengths, False)
-
-
-        outputs_each_layer = []
-        output_seqs = seqs
-        for i, (forward_layer, backward_layer, layer_norm) in enumerate(self.lstm_layers):
-            forward_output, final_forward_state = forward_layer(output_seqs, lengths)
-            backward_output, final_backward_state = backward_layer(output_seqs, lengths)
-            output_seqs = torch.cat([forward_output, backward_output], -1)
-            if layer_norm is not None:
-                output_seqs = layer_norm(output_seqs)
-            outputs_each_layer.append(output_seqs)
-
-        if return_all:
-            output_seqs = torch.cat(outputs_each_layer, -1)
+        output_seqs = self.run_rnn(seqs, lengths)
         if not is_sorted:
             # noinspection PyUnboundLocalVariable
             output_seqs = unsort_sequences(output_seqs, unsort_idx, original_shape, unpack=False)
@@ -252,3 +251,35 @@ class LSTM(torch.nn.Module):
         # noinspection PyUnboundLocalVariable
         return output_seqs
 
+    @classmethod
+    def load_func(cls, data):
+        f = BytesIO(data)
+        map_location = "cpu"
+        import inspect
+        # get map_location from stack
+        map_location_2 = inspect.currentframe().f_back.f_locals.get("map_location")
+        if map_location_2:
+            map_location = map_location_2
+        ret = torch.jit.load(f, map_location=map_location)
+
+        parameters = dict(ret.named_parameters())
+        try:
+            ret.output_dim = parameters["layers.1.w_2c.bias"].shape[-1] + parameters["layers.1.w_2p.bias"].shape[-1]
+        except KeyError:
+            ret.output_dim = parameters["layers.1.w_2.bias"].shape[-1]
+
+        ret.__class__ = cls
+        return ret
+
+    def __reduce__(self):
+        f = BytesIO()
+        torch.jit.save(self, f)
+        f.seek(0)
+        return self.__class__.load_func, (f.read(),)
+
+
+if __name__ == '__main__':
+    lstm = LSTM(100, 100, 3, 0.5, 0.5, False)
+    # lengths, _ = torch.sort(-torch.randint(0, 9, [8]))
+    # lstm(torch.randn(8, 10, 100), -lengths)
+    torch.jit.save(lstm, "/tmp/dadfa")
