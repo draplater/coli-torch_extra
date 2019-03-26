@@ -18,23 +18,29 @@ def to_cuda(inputs):
             inputs[i] = inputs[i].pin_memory().cuda()
 
 
-@torch.jit.script
-def pad_and_stack_1d(tensors: List[Tensor], to: int = -1, constant: int = 0):
+# @torch.jit.script
+def pad_and_stack_1d(tensors, to= -1, constant= 0, device=None):
+    # type: (List[Tensor], int, int, Device) -> Tensor
     if to == -1:
         for i in range(len(tensors)):
             tmp = tensors[i].size(0)
             if tmp > to:
                 to = tmp
+    if device is None:
+        device = tensors[0].device
     shape = (len(tensors), to) + tensors[0].shape[1:]
-    result = torch.full(shape, constant, dtype=tensors[0].dtype)
+    result = torch.full(shape, constant, dtype=tensors[0].dtype, device=device)
     for i in range(len(tensors)):
         tensor = tensors[i]
         result[i, :tensor.size(0)] = tensor
     return result
 
 
-@torch.jit.script
-def pad_and_stack_2d(tensors: List[Tensor], to_1: int = -1, to_2: int = -1, constant: int = 0):
+# @torch.jit.script
+def pad_and_stack_2d(tensors, to_1= -1,
+                     to_2= -1, constant= 0,
+                     device=None):
+    # type: (List[Tensor], int, int, int, Device) -> Tensor
     if to_1 == -1:
         for i in range(len(tensors)):
             tmp = tensors[i].size(0)
@@ -47,11 +53,47 @@ def pad_and_stack_2d(tensors: List[Tensor], to_1: int = -1, to_2: int = -1, cons
             if tmp > to_2:
                 to_2 = tmp
 
+    if device is None:
+        device = tensors[0].device
+
     shape = (len(tensors), to_1, to_2) + tensors[0].shape[2:]
-    result = torch.full(shape, constant, dtype=tensors[0].dtype)
+    result = torch.full(shape, constant, dtype=tensors[0].dtype, device=device)
     for i in range(len(tensors)):
         tensor = tensors[i]
         result[i, :tensor.size(0), :tensor.size(1)] = tensor
+    return result
+
+
+# @torch.jit.script
+def pad_and_stack_2d_2(tensors_list, to_1= -1,
+                       to_2= -1, constant= 0,
+                       device=None):
+    # type: (List[List[Tensor]], int, int, int, Device) -> Tensor
+    if to_1 == -1 or to_2 == -1:
+        new_to_1 = -1
+        new_to_2 = -1
+        for i in range(len(tensors_list)):
+            inner_len = len(tensors_list[i])
+            if inner_len > new_to_1:
+                new_to_1 = inner_len
+            for j in range(inner_len):
+                tmp = tensors_list[i][j].size(0)
+                if tmp > new_to_2:
+                    new_to_2 = tmp
+        if to_1 == -1:
+            to_1 = new_to_1
+        if to_2 == -1:
+            to_2 = new_to_2
+
+    if device is None:
+        device = tensors_list[0][0].device
+
+    shape = (len(tensors_list), to_1, to_2) + tensors_list[0][0].shape[1:]
+    result = torch.full(shape, constant, dtype=tensors_list[0][0].dtype, device=device)
+    for i in range(len(tensors_list)):
+        for j in range(len(tensors_list[i])):
+            tensor = tensors_list[i][j]
+            result[i, j, :tensor.size(0)] = tensor
     return result
 
 
