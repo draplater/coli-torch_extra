@@ -1,6 +1,7 @@
 import torch
 from torch.nn import Module, Embedding, Linear
 
+from coli.basic_tools.common_utils import NoPickle
 from coli.data_utils import dataset
 import torch.nn.functional as F
 
@@ -32,13 +33,14 @@ def lookup_characters(words_itr, char_dict, padded_length,
 
 class ExternalEmbeddingPlugin(Module):
     def __init__(self, embedding_filename, project_to=None, encoding="utf-8",
-                 freeze=True, lower=False, gpu=False):
+                 lower=False, gpu=False):
         super().__init__()
         self.lower = lower
         self.project_to = project_to
-        self.reload(embedding_filename, freeze, encoding, gpu)
+        self.gpu = gpu
+        self.reload(embedding_filename, encoding)
 
-    def reload(self, embedding_filename, freeze=True, encoding="utf-8", gpu=False):
+    def reload(self, embedding_filename, encoding="utf-8"):
         words_and_vectors = read_embedding(embedding_filename, encoding)
         self.output_dim = len(words_and_vectors[0][1])
         # noinspection PyCallingNonCallable
@@ -50,10 +52,7 @@ class ExternalEmbeddingPlugin(Module):
         vectors = torch.tensor(vectors_py, dtype=torch.float32)
 
         # noinspection PyReturnFromInit
-        self.embedding = Embedding.from_pretrained(vectors, freeze=freeze)
-
-        if gpu:
-            self.embedding = self.embedding.cuda()
+        self.embedding = NoPickle([Embedding.from_pretrained(vectors)])
 
         if self.project_to:
             self.projection = Linear(self.output_dim, self.project_to)
@@ -75,7 +74,9 @@ class ExternalEmbeddingPlugin(Module):
         feed_dict[pls.words_pretrained] = pad_and_stack_1d([i.extra["words_pretrained"] for i in batch_sentences])
 
     def forward(self, feed_dict):
-        ret = self.embedding(feed_dict.words_pretrained)
+        ret = self.embedding[0](feed_dict.words_pretrained.cpu())
+        if self.gpu:
+            ret = ret.cuda()
         if hasattr(self, "projection"):
             ret = self.projection(ret)
         return ret

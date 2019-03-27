@@ -109,7 +109,7 @@ class PyTorchParserBase(Generic[DF, SF], DependencyParserBase[DF], metaclass=ABC
             ret = parser.train(
                 train_buckets,
                 [(a, b, c) for (a, b), c  # file_name, data, buckets
-                in zip(data_devs.items(), dev_buckets)]
+                 in zip(data_devs.items(), dev_buckets)]
             )
             if ret == STOP_TRAINING:
                 break
@@ -179,7 +179,7 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
 
         if args.embed_file is not None:
             self.plugins["external_embedding"] = ExternalEmbeddingPlugin(
-                args.embed_file)
+                args.embed_file, gpu=args.gpu)
 
         self.global_step = 0
         self.global_epoch = 1
