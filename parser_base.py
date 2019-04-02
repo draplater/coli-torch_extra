@@ -237,7 +237,12 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
             output = self.network(batch_sents, AttrDict(feed_dict))
             total_loss += output.loss.detach()
             sent_count += output.sent_count
+            if self.hparams.learning.update_every > 1:
+                output.loss /= self.hparams.learning.update_every
             output.loss.backward()
+            if self.global_step % self.hparams.learning.update_every != 0:
+                self.global_step += 1
+                continue
             grad_norm = torch.nn.utils.clip_grad_norm_(self.trainable_parameters, self.grad_clip_threshold)
             # noinspection PyArgumentList
             self.optimizer.step()

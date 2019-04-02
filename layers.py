@@ -200,6 +200,7 @@ class AdvancedLearningOptions(OptionsBase):
 
     clip_grad_norm: float = 0.0
     min_learning_rate: "Stop training when learning rate decrease to this value" = 1e-6
+    update_every: int = 1
 
 
 def create_mlp(input_dim, output_dim,
