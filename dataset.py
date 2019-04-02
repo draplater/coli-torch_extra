@@ -37,10 +37,10 @@ class ExternalEmbeddingPlugin(Module):
         super().__init__()
         self.lower = lower
         self.project_to = project_to
-        self.gpu = gpu
-        self.reload(embedding_filename, encoding)
+        self.reload(embedding_filename, encoding, gpu)
 
-    def reload(self, embedding_filename, encoding="utf-8"):
+    def reload(self, embedding_filename, encoding="utf-8", gpu=False):
+        self.gpu = gpu
         words_and_vectors = read_embedding(embedding_filename, encoding)
         self.output_dim = len(words_and_vectors[0][1])
         # noinspection PyCallingNonCallable
@@ -52,7 +52,7 @@ class ExternalEmbeddingPlugin(Module):
         vectors = torch.tensor(vectors_py, dtype=torch.float32)
 
         # noinspection PyReturnFromInit
-        self.embedding = NoPickle([Embedding.from_pretrained(vectors)])
+        self.embedding = NoPickle([Embedding.from_pretrained(vectors, freeze=True)])
 
         if self.project_to:
             self.projection = Linear(self.output_dim, self.project_to)
