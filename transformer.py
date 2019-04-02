@@ -6,7 +6,7 @@ import torch
 from dataclasses import dataclass
 from torch import nn as nn
 from torch.jit import script_method, ScriptModule
-from torch.nn import init as init, ModuleList, LayerNorm
+from torch.nn import init as init, ModuleList, LayerNorm, Module
 import torch.nn.init as I
 
 from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
@@ -277,7 +277,7 @@ class PartitionedPositionwiseFeedForward(ScriptModule):
 
 
 class TransformerEncoder(ScriptModule):
-    __constants__ = ["partitioned", "num_layers", "layers"]
+    __constants__ = ["partitioned", "num_layers", "layers", "timing_layer_norm_value"]
 
     @dataclass
     class Options(OptionsBase):
@@ -372,7 +372,8 @@ class TransformerEncoder(ScriptModule):
         timing_signal = self.timing_dropout(
             self.position_table[:res.shape[1], :].unsqueeze(0).repeat(res.shape[0], 1, 1))
 
-        timing_signal = self.timing_layer_norm(timing_signal)
+        if self.timing_layer_norm_value:
+            timing_signal = self.timing_layer_norm(timing_signal)
 
         if self.partitioned:
             res = torch.cat([res, timing_signal], dim=-1)
@@ -406,7 +407,10 @@ class TransformerEncoder(ScriptModule):
 
     def __reduce__(self):
         f = BytesIO()
-        torch.jit.save(self, f)
+        if ScriptModule is not Module:
+            torch.jit.save(self, f)
+        else:
+            torch.save(self.state_dict(), f)
         f.seek(0)
         return self.__class__.load_func, (f.read(),)
 
