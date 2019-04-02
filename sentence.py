@@ -56,7 +56,8 @@ class SentenceEmbeddings(Module):
                 assert hparams.dim_word == hparams.dim_char
 
         for plugin in self.plugins.values():
-            input_dims.append(plugin.output_dim)
+            if hparams.mode == "concat":
+                input_dims.append(plugin.output_dim)
 
         if hparams.mode == "concat":
             self.output_dim = sum(input_dims)
@@ -103,9 +104,15 @@ class SentenceEmbeddings(Module):
 
         for plugin in self.plugins.values():
             plugin_output = plugin(inputs)
-            # FIXME: remove this ugly tweak
+            # FIXME: remove these two ugly tweak
             if plugin_output.shape[1] == inputs.words.shape[1] + 2:
                 plugin_output = plugin_output[:, 1:-1]
+            # pad external embedding to dim_word
+            if self.mode == "add" and plugin_output.shape[-1] < self.hparams.dim_word:
+                plugin_output = torch.cat(
+                    [plugin_output,
+                    plugin_output.new_zeros(
+                        (*inputs.words.shape, self.hparams.dim_word - plugin_output.shape[-1]))], -1)
             all_features.append(plugin_output)
 
         if self.mode == "concat":
