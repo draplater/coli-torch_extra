@@ -13,18 +13,18 @@ from coli.torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_tim
 
 
 class TFCompatibleLSTMCell(ScriptModule):
-    __constants__ = ["forget_bias", "input_keep_prob", "recurrent_keep_prob"]
+    __constants__ = ["forget_bias"]
 
     def __init__(self, input_size, hidden_size,
-                 input_keep_prob=1.0, recurrent_keep_prob=1.0,
-                 weight_initializer=I.xavier_normal_,
+                 # input_keep_prob=1.0, recurrent_keep_prob=1.0,
+                 weight_initializer=I.orthogonal_,
                  forget_bias=1.0,
                  activation=torch.tanh):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
-        self.input_keep_prob = input_keep_prob
-        self.recurrent_keep_prob = recurrent_keep_prob
+        # self.input_keep_prob = float(input_keep_prob)
+        # self.recurrent_keep_prob = float(recurrent_keep_prob)
         self.weight_initializer = weight_initializer
         self.activation = activation
         self.forget_bias = forget_bias
@@ -38,11 +38,52 @@ class TFCompatibleLSTMCell(ScriptModule):
 
     @script_method
     def forward(self, inputs: Tensor, h_prev: Tensor, c_prev: Tensor) -> Tuple[Tensor, Tensor]:
-        if self.training and self.input_keep_prob < 1.0:
-            inputs = F.dropout(inputs, 1 - self.input_keep_prob, self.training)
-        if self.training and self.recurrent_keep_prob < 1.0:
-            h_prev = F.dropout(h_prev, 1 - self.recurrent_keep_prob, self.training)
-        lstm_matrix = self.linearity(torch.cat([inputs, h_prev], 1))
+        lstm_matrix = self.linearity(torch.cat([inputs, h_prev], -1))
+        i, j, f, o = torch.split(
+            lstm_matrix,
+            lstm_matrix.shape[1] // 4,
+            dim=1)
+        c = torch.sigmoid(f + self.forget_bias) * c_prev + \
+            torch.sigmoid(i) * self.activation(j)
+        h = torch.sigmoid(o) * self.activation(c)
+        return h, c
+
+    def extra_repr(self):
+        return 'input_size={}, hidden_size={}'.format(
+            self.input_size, self.hidden_size
+        )
+
+
+class NormalLSTMCell(ScriptModule):
+    __constants__ = ["forget_bias"]
+
+    def __init__(self, input_size, hidden_size,
+                 # input_keep_prob=1.0, recurrent_keep_prob=1.0,
+                 weight_initializer=I.orthogonal_,
+                 forget_bias=0.0,
+                 activation=torch.tanh):
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        # self.input_keep_prob = float(input_keep_prob)
+        # self.recurrent_keep_prob = float(recurrent_keep_prob)
+        self.weight_initializer = weight_initializer
+        self.activation = activation
+        self.forget_bias = forget_bias
+
+        self.wx = nn.Linear(input_size, 4 * hidden_size, bias=True)
+        self.wh = nn.Linear(self.hidden_size, 4 * hidden_size, bias=True)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        self.weight_initializer(self.wx.weight)
+        self.weight_initializer(self.wh.weight)
+        I.zeros_(self.wx.bias)
+        I.zeros_(self.wh.bias)
+
+    @script_method
+    def forward(self, inputs: Tensor, h_prev: Tensor, c_prev: Tensor) -> Tuple[Tensor, Tensor]:
+        lstm_matrix = self.wx(inputs) + self.wh(h_prev)
         i, j, f, o = torch.split(
             lstm_matrix,
             lstm_matrix.shape[1] // 4,
@@ -59,29 +100,51 @@ class TFCompatibleLSTMCell(ScriptModule):
 
 
 class DynamicRNN(ScriptModule):
-    __constants__ = ["hidden_size", "go_forward"]
+    __constants__ = [
+        "hidden_size", "input_keep_prob", "recurrent_keep_prob", "go_forward",
+        "batch_first"]
 
     def __init__(self, cell,
-                 go_forward=True):
+                 input_keep_prob=1.0,
+                 recurrent_keep_prob=1.0,
+                 go_forward=True,
+                 ):
         super().__init__()
         self.cell = cell
         self.go_forward = go_forward
+        self.input_keep_prob = float(input_keep_prob)
+        self.recurrent_keep_prob = float(recurrent_keep_prob)
         self.hidden_size = self.cell.hidden_size
 
     @script_method
     def forward(self, sequence_tensor: Tensor, batch_lengths: Tensor):
-        batch_size = int(sequence_tensor.shape[0])
-        total_timesteps = int(sequence_tensor.shape[1])
-        output_accumulator = torch.zeros([batch_size, total_timesteps, self.hidden_size],
+        total_timesteps = int(sequence_tensor.shape[0])
+        batch_size = int(sequence_tensor.shape[1])
+        output_accumulator = torch.zeros([total_timesteps, batch_size, self.hidden_size],
                                          dtype=sequence_tensor.dtype, device=sequence_tensor.device)
         full_batch_previous_memory = torch.zeros([batch_size, self.hidden_size],
                                                  dtype=sequence_tensor.dtype, device=sequence_tensor.device)
         full_batch_previous_state = torch.zeros([batch_size, self.hidden_size],
                                                 dtype=sequence_tensor.dtype, device=sequence_tensor.device)
 
+        if self.training and self.input_keep_prob < 1.0:
+            input_noise = F.dropout(torch.ones([1, batch_size, sequence_tensor.shape[-1]],
+                                               dtype=sequence_tensor.dtype, device=sequence_tensor.device),
+                                    1 - self.input_keep_prob, self.training
+                                    )
+            sequence_tensor = sequence_tensor * input_noise
+
+        if self.training and self.recurrent_keep_prob < 1.0:
+            recurrent_noise = F.dropout(torch.ones([batch_size, self.hidden_size],
+                                                   dtype=sequence_tensor.dtype, device=sequence_tensor.device),
+                                        1 - self.recurrent_keep_prob, self.training
+                                        )
+        else:
+            recurrent_noise = torch.ones([batch_size, self.hidden_size],
+                                         dtype=sequence_tensor.dtype, device=sequence_tensor.device)
+
         current_length_index = (batch_size - 1) if self.go_forward else 0
         for timestep in range(total_timesteps):
-            assert current_length_index >= 0
             # The index depends on which end we start.
             index = timestep if self.go_forward else total_timesteps - timestep - 1
 
@@ -95,28 +158,32 @@ class DynamicRNN(ScriptModule):
             # pass the index at which the shortest elements of the batch finish,
             # we stop picking them up for the computation.
             if self.go_forward:
-                while int(batch_lengths[current_length_index]) <= index:
+                while current_length_index >= 0 and int(batch_lengths[current_length_index]) <= index:
                     current_length_index -= 1
             # If we're going backwards, we are _picking up_ more indices.
             else:
                 # First conditional: Are we already at the maximum number of elements in the batch?
                 # Second conditional: Does the next shortest sequence beyond the current batch
                 # index require computation use this timestep?
-                while current_length_index < (len(batch_lengths) - 1) and \
+                while current_length_index < (batch_size - 1) and \
                         int(batch_lengths[current_length_index + 1]) > index:
                     current_length_index += 1
 
-            timestep_output, memory = self.cell(
-                sequence_tensor[0: current_length_index + 1, index],
-                full_batch_previous_state[0: current_length_index + 1],
-                full_batch_previous_memory[0: current_length_index + 1])
+            if 0 <= current_length_index < batch_size:
+                timestep_output, memory = self.cell(
+                    sequence_tensor[index, :(current_length_index + 1)],
+                    full_batch_previous_state[:(current_length_index + 1)],
+                    full_batch_previous_memory[:(current_length_index + 1)])
 
-            # We've been doing computation with less than the full batch, so here we create a new
-            # variable for the the whole batch at this timestep and insert the result for the
-            # relevant elements of the batch into it.
-            full_batch_previous_memory[0:current_length_index + 1] = memory
-            full_batch_previous_state[0:current_length_index + 1] = timestep_output
-            output_accumulator[0:current_length_index + 1, index] = timestep_output
+                if self.training and self.recurrent_keep_prob < 1.0:
+                    timestep_output = timestep_output * recurrent_noise[:(current_length_index + 1)]
+
+                # We've been doing computation with less than the full batch, so here we create a new
+                # variable for the the whole batch at this timestep and insert the result for the
+                # relevant elements of the batch into it.
+                full_batch_previous_memory[:(current_length_index + 1)] = memory
+                full_batch_previous_state[:(current_length_index + 1)] = timestep_output
+                output_accumulator[index, :(current_length_index + 1)] = timestep_output
 
         # Mimic the pytorch API by returning state in the following shape:
         # (num_layers * num_directions, batch_size, hidden_size). As this
@@ -124,7 +191,8 @@ class DynamicRNN(ScriptModule):
         # final_state = (full_batch_previous_state.unsqueeze(0),
         #                full_batch_previous_memory.unsqueeze(0))
 
-        return output_accumulator
+        ret = output_accumulator
+        return ret
 
 
 class Identity(ScriptModule):
@@ -133,7 +201,7 @@ class Identity(ScriptModule):
         return x
 
 
-class LSTMLayer(ScriptModule):
+class UniDirLSTMLayer(ScriptModule):
     __constants__ = ["use_layer_norm"]
 
     def __init__(self,
@@ -143,16 +211,47 @@ class LSTMLayer(ScriptModule):
                  input_keep_prob: float = 1.0,
                  recurrent_keep_prob: float = 1.0,
                  layer_norm=False):
-        super(LSTMLayer, self).__init__()
+        super(UniDirLSTMLayer, self).__init__()
         self.forward_layer = DynamicRNN(
-            cell_class(input_size, hidden_size,
-                       input_keep_prob,
-                       recurrent_keep_prob),
+            cell_class(input_size, hidden_size),
+            input_keep_prob,
+            recurrent_keep_prob,
+            go_forward=True)
+        self.use_layer_norm = layer_norm
+
+        if layer_norm:
+            self.layer_norm = LayerNorm(hidden_size)
+        else:
+            self.layer_norm = Identity()
+
+    @script_method
+    def forward(self, seqs, lengths):
+        output_seqs = self.forward_layer(seqs, lengths)
+        if self.use_layer_norm:
+            output_seqs = self.layer_norm(output_seqs)
+        return output_seqs
+
+
+class BiLSTMLayer(ScriptModule):
+    __constants__ = ["use_layer_norm"]
+
+    def __init__(self,
+                 cell_class,
+                 input_size: int,
+                 hidden_size: int,
+                 input_keep_prob: float = 1.0,
+                 recurrent_keep_prob: float = 1.0,
+                 layer_norm=False):
+        super(BiLSTMLayer, self).__init__()
+        self.forward_layer = DynamicRNN(
+            cell_class(input_size, hidden_size),
+            input_keep_prob,
+            recurrent_keep_prob,
             go_forward=True)
         self.backward_layer = DynamicRNN(
-            cell_class(input_size, hidden_size,
-                       input_keep_prob,
-                       recurrent_keep_prob),
+            cell_class(input_size, hidden_size),
+            input_keep_prob,
+            recurrent_keep_prob,
             go_forward=False)
         self.use_layer_norm = layer_norm
 
@@ -166,7 +265,7 @@ class LSTMLayer(ScriptModule):
         forward_output = self.forward_layer(seqs, lengths)
         backward_output = self.backward_layer(seqs, lengths)
         output_seqs = torch.cat([forward_output, backward_output], -1)
-        if self.use_layer_norm is not None:
+        if self.use_layer_norm:
             output_seqs = self.layer_norm(output_seqs)
         return output_seqs
 
@@ -192,7 +291,7 @@ class LSTM(ScriptModule):
         <https://arxiv.org/abs/1512.05287>`_ .
     """
 
-    cell_class = TFCompatibleLSTMCell
+    cell_class = NormalLSTMCell
     __constants__ = ["num_layers", "use_layer_norm", "layers"]
 
     def __init__(self,
@@ -219,18 +318,25 @@ class LSTM(ScriptModule):
         layers = []
 
         for layer_index in range(num_layers):
-            layers.append(LSTMLayer(self.cell_class, lstm_input_size, hidden_size,
-                                    input_keep_prob, recurrent_keep_prob, layer_norm))
-            lstm_input_size = hidden_size * 2
+            args = (self.cell_class, lstm_input_size, hidden_size,
+                    input_keep_prob if layer_index >= 1 else (1 - first_dropout),
+                    recurrent_keep_prob, layer_norm)
+            if bidirectional:
+                layers.append(BiLSTMLayer(*args))
+                lstm_input_size = hidden_size * 2
+            else:
+                layers.append(UniDirLSTMLayer(*args))
+                lstm_input_size = hidden_size
 
         self.layers = ModuleList(layers)
 
     @script_method
     def run_rnn(self, seqs, lengths):
+        seqs = seqs.transpose(0, 1).contiguous()
         output_seqs = seqs
         for layer in self.layers:
             output_seqs = layer(output_seqs, lengths)
-        return output_seqs
+        return output_seqs.transpose(0, 1).contiguous()
 
     def forward(self,  # pylint: disable=arguments-differ
                 seqs: Tensor,
