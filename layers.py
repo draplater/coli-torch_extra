@@ -193,7 +193,7 @@ loss_funcs = {"softmax": cross_encropy}
 
 @dataclass
 class AdamOptions(OptionsBase):
-    lr: float = 1e-4
+    lr: float = 1e-3
     beta_1: float = 0.9
     beta_2: float = 0.999
     eps: float = 1e-8
