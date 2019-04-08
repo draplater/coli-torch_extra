@@ -24,7 +24,7 @@ from coli.data_utils.dataset import SentenceFeaturesBase, bucket_types, Sentence
 from coli.torch_extra.bert_manager import BERTPlugin
 from coli.torch_extra.dataset import ExternalEmbeddingPlugin
 from coli.torch_extra.elmo_manager import ELMoPlugin
-from coli.torch_extra.layers import AdvancedLearningOptions, ExternalContextualEmbedding
+from coli.torch_extra.layers import AdvancedLearningOptions, ExternalContextualEmbedding, OptimizerOptions
 from coli.torch_extra.utils import to_cuda
 
 BK = TypeVar("BK", bound=SentenceBucketsBase)
@@ -156,6 +156,7 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
 
     @dataclass
     class HParams(HParamsBase):
+        optimizer: OptimizerOptions = argfield(default_factory=OptimizerOptions)
         learning: AdvancedLearningOptions = field(
             default_factory=AdvancedLearningOptions)
         pretrained_contextual: ExternalContextualEmbedding.Options = field(
@@ -165,11 +166,12 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
     class Options(PyTorchParserBase.Options):
         embed_file: str = argfield(None, predict_time=True, predict_default=None)
         gpu: bool = argfield(False, predict_time=True, predict_default=False)
+        hparams: Optional["SimpleParser.HParams"] = argfield(default_factory=lambda: SimpleParser.HParams())
 
     def __init__(self, args: OptionsType, data_train):
         super(SimpleParser, self).__init__(args, data_train)
 
-        self.args = args
+        self.args: "SimpleParser.Options" = args
         self.hparams: "SimpleParser.HParams" = args.hparams
         self.plugins = {}
 
@@ -189,11 +191,8 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
         self.grad_clip_threshold = np.inf if self.hparams.learning.clip_grad_norm == 0 \
             else self.hparams.learning.clip_grad_norm
 
-    def get_optimizer_and_scheduler(self, trainable_params, **kwargs):
-        optimizer = torch.optim.Adam(
-            trainable_params, **kwargs
-        )
-
+    def get_optimizer_and_scheduler(self, trainable_params):
+        optimizer = self.hparams.optimizer.get(trainable_params)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, 'max',
             factor=self.hparams.learning.step_decay_factor,
@@ -216,7 +215,7 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
 
     def schedule_lr(self, iteration):
         iteration = iteration + 1
-        warmup_coeff = self.hparams.learning.learning_rate / \
+        warmup_coeff = self.hparams.optimizer.learning_rate / \
                        self.hparams.learning.learning_rate_warmup_steps
         if iteration <= self.hparams.learning.learning_rate_warmup_steps:
             self.set_lr(iteration * warmup_coeff)

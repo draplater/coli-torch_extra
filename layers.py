@@ -5,6 +5,7 @@ from torch import Tensor
 from torch.nn import Embedding, Module, Dropout, LayerNorm, Sequential, Linear, ReLU
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from torch.optim import Adam
 
 from coli.basic_tools.dataclass_argparse import argfield, BranchSelect, OptionsBase
 from coli.torch_extra.bert_manager import BERTPlugin
@@ -147,12 +148,12 @@ class CharLSTMLayer(Module):
         num_layers: "Character LSTM layer count" = 2
         dropout: "Character Embedding Dropout" = 0
 
-    def __init__(self, input_size, num_layers, dropout):
+    def __init__(self, dim_char_input, input_size, num_layers, dropout):
         super(CharLSTMLayer, self).__init__()
-        self.char_lstm = LSTMLayer(input_size=input_size,
+        self.char_lstm = LSTMLayer(input_size=dim_char_input,
                                    hidden_size=input_size // 2,
                                    num_layers=num_layers,
-                                   input_keep_prob=1.0,
+                                   input_keep_prob=dropout,
                                    recurrent_keep_prob=1.0
                                    )
 
@@ -179,7 +180,6 @@ class CharacterEmbedding(BranchSelect):
     class Options(BranchSelect.Options):
         type: "Character Embedding Type" = argfield("rnn", choices=char_embeddings)
         rnn_options: CharLSTMLayer.Options = field(default_factory=CharLSTMLayer.Options)
-        dim_char: int = 100
         max_char: int = 20
 
 
@@ -192,8 +192,37 @@ loss_funcs = {"softmax": cross_encropy}
 
 
 @dataclass
+class AdamOptions(OptionsBase):
+    lr: float = 1e-4
+    beta_1: float = 0.9
+    beta_2: float = 0.999
+    eps: float = 1e-8
+    weight_decay: float = 0.0
+    amsgrad: float = False
+
+    def get_optimizer(self, trainable_params):
+        return Adam(trainable_params,
+                    lr=self.lr, betas=(self.beta_1, self.beta_2),
+                    eps=self.eps, weight_decay=self.weight_decay,
+                    amsgrad=self.amsgrad)
+
+
+@dataclass
+class OptimizerOptions(OptionsBase):
+    type: str = "adam"
+    adam_options: AdamOptions = argfield(default_factory=AdamOptions)
+
+    def get(self, trainable_params):
+        assert self.type == "adam", f"Optimizer {self.type} is not support yet"
+        return self.adam_options.get_optimizer(trainable_params)
+
+    @property
+    def learning_rate(self):
+        return self.adam_options.lr
+
+
+@dataclass
 class AdvancedLearningOptions(OptionsBase):
-    learning_rate: float = 1e-4
     learning_rate_warmup_steps: int = 160
     step_decay_factor: float = 0.5
     step_decay_patience: int = 5
