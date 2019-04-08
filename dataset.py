@@ -1,3 +1,5 @@
+from abc import ABCMeta
+
 import torch
 from torch.nn import Module, Embedding, Linear
 
@@ -31,7 +33,25 @@ def lookup_characters(words_itr, char_dict, padded_length,
                                      return_lengths, tensor_factory)
 
 
-class ExternalEmbeddingPlugin(Module):
+class InputPluginBase(Module, metaclass=ABCMeta):
+    def __init__(self, *args, **kwargs):
+        super(InputPluginBase, self).__init__()
+
+    def reload(self, *args, **kwargs):
+        pass
+
+    def process_sentence_feature(self, sent, sent_feature,
+                                 padded_length, start_and_end=False):
+        pass
+
+    def process_batch(self, pls, feed_dict, batch_sentences):
+        pass
+
+    def forward(self, feed_dict):
+        pass
+
+
+class ExternalEmbeddingPlugin(InputPluginBase):
     def __init__(self, embedding_filename, project_to=None, encoding="utf-8",
                  lower=False, gpu=False):
         super().__init__()
@@ -64,11 +84,11 @@ class ExternalEmbeddingPlugin(Module):
         return word
 
     def process_sentence_feature(self, sent, sent_feature,
-                                 padded_length, start_and_stop=False):
+                                 padded_length, start_and_end=False):
         words = [self.lower_func(i) for i in sent.words]
         sent_feature.extra["words_pretrained"] = lookup_list(
             words, self.lookup,
-            padded_length=padded_length, default=0, start_and_stop=start_and_stop)
+            padded_length=padded_length, default=0, start_and_stop=start_and_end)
 
     def process_batch(self, pls, feed_dict, batch_sentences):
         feed_dict[pls.words_pretrained] = pad_and_stack_1d([i.extra["words_pretrained"] for i in batch_sentences])

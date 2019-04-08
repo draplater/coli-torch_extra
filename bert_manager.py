@@ -3,13 +3,14 @@ from typing import Optional
 import torch
 
 from dataclasses import dataclass
-from torch.nn import Module, Linear
+from torch.nn import Linear
 
 from coli.basic_tools.common_utils import NullContextManager
 from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
 from coli.data_utils.dataset import SentenceFeaturesBase, START_OF_SENTENCE, END_OF_SENTENCE
+from coli.torch_extra.dataset import InputPluginBase
 from coli.torch_extra.utils import pad_and_stack_1d, broadcast_gather
-from coli.torch_span.layers import FeatureDropout, FeatureDropout2
+from coli.torch_span.layers import FeatureDropout
 
 BERT_TOKEN_MAPPING = {
     "-LRB-": "(",
@@ -33,7 +34,7 @@ BERT_TOKEN_MAPPING = {
 }
 
 
-class BERTPlugin(Module):
+class BERTPlugin(InputPluginBase):
     @dataclass
     class Options(OptionsBase):
         bert_model: str = argfield(predict_time=True)
@@ -78,8 +79,8 @@ class BERTPlugin(Module):
         self.max_len = self.bert.embeddings.position_embeddings.num_embeddings
 
     def process_sentence_feature(self, sent, sent_feature: SentenceFeaturesBase,
-                                 padded_length):
-        keep_boundaries = getattr(sent_feature, "bert_boundaries", False)
+                                 padded_length, start_and_end=False):
+        keep_boundaries = start_and_end
         pooling_method = getattr(self, "pooling_method", "last")
         word_pieces = ["[CLS]"]
         word_starts = []
@@ -142,4 +143,3 @@ class BERTPlugin(Module):
 
         # noinspection PyUnboundLocalVariable
         return word_features
-

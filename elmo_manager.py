@@ -11,6 +11,8 @@ from bilm.load_vocab import BiLMVocabLoader
 from coli.basic_tools.common_utils import NoPickle
 from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
 from coli.data_utils.dataset import SentenceFeaturesBase
+from coli.torch_extra.dataset import InputPluginBase
+from coli.torch_extra.utils import pad_and_stack_1d
 from coli.torch_span.layers import FeatureDropout
 
 global_elmo_cache = WeakValueDictionary()
@@ -52,7 +54,7 @@ def get_elmo(options_file: str,
     return ret
 
 
-class ELMoPlugin(Module):
+class ELMoPlugin(InputPluginBase):
     @dataclass
     class Options(OptionsBase):
         path: str = argfield(predict_default=True)
@@ -117,15 +119,15 @@ class ELMoPlugin(Module):
             self.elmo.scalar_mix_0.gamma.requires_grad = False
 
     def process_sentence_feature(self, sent, sent_feature: SentenceFeaturesBase,
-                                 padded_length, start_and_stop):
+                                 padded_length, start_and_end):
         bilm_chars_padded = torch.from_numpy(self.vocab.get_chars_input(
             sent.words, padded_length,
-            boundaries=start_and_stop))
+            boundaries=start_and_end))
         sent_feature.extra["bilm_characters"] = bilm_chars_padded
 
     def process_batch(self, pls, feed_dict, batch_sentences):
-        feed_dict[pls.bilm_chars] = torch.stack([i.extra["bilm_characters"]
-                                                 for i in batch_sentences])
+        feed_dict[pls.bilm_chars] = pad_and_stack_1d([i.extra["bilm_characters"]
+                                                      for i in batch_sentences])
 
     def forward(self, feed_dict):
         ret = self.elmo(feed_dict.bilm_chars)["elmo_representations"][0]
