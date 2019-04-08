@@ -12,6 +12,7 @@ class SentenceEmbeddings(Module):
     class Options(OptionsBase):
         dim_word: "word embedding dim" = 100
         dim_postag: "postag embedding dim. 0 for not using postag" = 100
+        dim_char_input: "character embedding input dim" = 100
         dim_char: "character embedding dim. 0 for not using character" = 100
         word_dropout: "word embedding dropout" = 0.4
         postag_dropout: "postag embedding dropout" = 0.2
@@ -48,8 +49,11 @@ class SentenceEmbeddings(Module):
 
         if hparams.dim_char > 0:
             self.bilm = None
-            self.character_lookup = Embedding(len(statistics.characters), hparams.dim_char)
-            self.char_embeded = CharacterEmbedding.get(hparams.character_embedding, input_size=hparams.dim_char)
+            self.character_lookup = Embedding(len(statistics.characters),
+                                              hparams.dim_char_input)
+            self.char_embeded = CharacterEmbedding.get(hparams.character_embedding,
+                                                       dim_char_input=hparams.dim_char_input,
+                                                       input_size=hparams.dim_char)
             if not hparams.replace_unk_with_chars:
                 input_dims.append(hparams.dim_char)
             else:
@@ -111,8 +115,8 @@ class SentenceEmbeddings(Module):
             if self.mode == "add" and plugin_output.shape[-1] < self.hparams.dim_word:
                 plugin_output = torch.cat(
                     [plugin_output,
-                    plugin_output.new_zeros(
-                        (*inputs.words.shape, self.hparams.dim_word - plugin_output.shape[-1]))], -1)
+                     plugin_output.new_zeros(
+                         (*inputs.words.shape, self.hparams.dim_word - plugin_output.shape[-1]))], -1)
             all_features.append(plugin_output)
 
         if self.mode == "concat":
