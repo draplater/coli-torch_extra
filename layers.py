@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from dataclasses import dataclass, field
 from torch import Tensor
-from torch.nn import Embedding, Module, Dropout, LayerNorm, Sequential, Linear, ReLU
+from torch.nn import Embedding, Module, Dropout, LayerNorm, Sequential, Linear, ReLU, ModuleList, Conv1d
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torch.optim import Adam
@@ -125,9 +125,132 @@ class GRULayer(LSTMLayer):
     default_cell = torch.nn.GRU
 
 
+class AllenNLPLSTMLayer(Module):
+    default_cell = torch.nn.LSTM
+
+    @dataclass
+    class Options(OptionsBase):
+        """ LSTM Layer Options"""
+        hidden_size: "LSTM dimension" = 500
+        num_layers: "lstm layer count" = 2
+        input_keep_prob: "input keep prob" = 0.5
+        recurrent_keep_prob: "recurrent keep prob" = 1
+        layer_norm: "use layer normalization" = False
+        first_dropout: "input dropout" = 0
+        bidirectional: bool = True
+
+    def __init__(self, input_size, hidden_size, num_layers,
+                 input_keep_prob,
+                 recurrent_keep_prob,
+                 layer_norm=False,
+                 first_dropout=0,
+                 bidirectional=True
+                 ):
+        super(AllenNLPLSTMLayer, self).__init__()
+        from allennlp.modules.stacked_bidirectional_lstm import StackedBidirectionalLstm
+        self.rnn = StackedBidirectionalLstm(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            recurrent_dropout_probability=1 - recurrent_keep_prob,
+            layer_dropout_probability=1 - input_keep_prob,
+            use_highway=False
+        )
+
+        self.layer_norm = LayerNorm(hidden_size * 2) if layer_norm else None
+        self.first_dropout = Dropout(first_dropout)
+        # self.reset_parameters()
+        self.output_dim = hidden_size * (2 if bidirectional else 1)
+
+    def forward(self, seqs: Tensor, lengths, return_sequence=True, is_sorted=False):
+        seqs = self.first_dropout(seqs)
+        if not is_sorted:
+            packed_seqs, unsort_idx = sort_sequences(seqs, lengths)
+        else:
+            packed_seqs = pack_padded_sequence(seqs, lengths, batch_first=True)
+            unsort_idx = None
+        output_pack, state_n = self.rnn(packed_seqs)
+
+        if return_sequence:
+            # return seqs
+            if not is_sorted:
+                ret = unsort_sequences(output_pack, unsort_idx, seqs.shape)
+            else:
+                output_seqs, _ = pad_packed_sequence(output_pack, batch_first=True)
+                ret = pad_timestamps_and_batches(output_seqs, seqs.shape)
+            if self.layer_norm is not None:
+                ret = self.layer_norm(ret)
+            return ret
+        else:
+            # return final states
+            # ignore layer norm
+            if isinstance(state_n, tuple) and len(state_n) == 2:
+                # LSTM
+                h_n, c_n = state_n
+            else:
+                # GRU
+                h_n = state_n
+            _, word_count, hidden_size = h_n.shape
+            ret = h_n[-2:].transpose(0, 1).contiguous().view(word_count, hidden_size * 2)
+            if seqs.shape[0] is not None and word_count < seqs.shape[0]:
+                ret = F.pad(ret,
+                            (0, 0,
+                             0, seqs.shape[0] - word_count
+                             ))
+            if not is_sorted:
+                return ret.index_select(0, unsort_idx)
+            else:
+                return ret
+
+
+class ConvEncoder(Module):
+    @dataclass
+    class Options(OptionsBase):
+        num_layers: int = 5
+        kernel_size: int = 3
+        channels: int = 300
+        embedding_dropout: float = 0.1
+        hidden_dropout: float = 0.1
+
+    def __init__(self, input_size, num_layers, kernel_size, channels,
+                 embedding_dropout, hidden_dropout):
+        super(ConvEncoder, self).__init__()
+        assert kernel_size % 2 == 1
+        self.conv = ModuleList([
+            Conv1d(input_size if i == 0 else channels, channels,
+                   kernel_size, padding=(kernel_size - 1) // 2)
+            for i in range(num_layers)])
+        self.embedding_dropout = embedding_dropout
+        self.hidden_dropout = hidden_dropout
+        self.output_dim = channels
+
+    def forward(self, seqs: Tensor, lengths, return_sequence=True, is_sorted=False):
+        batch_size, sent_length, feature_count = seqs.shape
+        seqs_ncl = seqs.transpose(1, 2)
+        if self.embedding_dropout:
+            dropout_mask = F.dropout(
+                torch.ones((batch_size, feature_count, 1),
+                          device=seqs_ncl.device, dtype=seqs_ncl.dtype),
+                self.embedding_dropout, self.training)
+            seqs_ncl *= dropout_mask
+        outputs_ncl = seqs_ncl
+        for layer in self.conv:
+            outputs_ncl = layer(outputs_ncl)
+            if self.hidden_dropout:
+                dropout_mask = F.dropout(
+                    torch.ones((batch_size, outputs_ncl.shape[1], 1),
+                               device=seqs_ncl.device, dtype=seqs_ncl.dtype),
+                    self.hidden_dropout, self.training)
+                outputs_ncl *= dropout_mask
+            outputs_ncl = F.relu(outputs_ncl)
+        return outputs_ncl.transpose(1, 2)
+
+
 contextual_units = {"lstm": LSTMLayer, "gru": GRULayer,
                     "tflstm": tf_rnn.LSTM,
-                    "transformer": TransformerEncoder}
+                    "allen_lstm": AllenNLPLSTMLayer,
+                    "transformer": TransformerEncoder,
+                    "conv": ConvEncoder}
 
 
 class ContextualUnits(BranchSelect):
@@ -140,6 +263,8 @@ class ContextualUnits(BranchSelect):
         tflstm_options: LSTMLayer.Options = field(default_factory=LSTMLayer.Options)
         gru_options: GRULayer.Options = field(default_factory=LSTMLayer.Options)
         transformer_options: TransformerEncoder.Options = field(default_factory=TransformerEncoder.Options)
+        allen_lstm_options: AllenNLPLSTMLayer.Options = field(default_factory=AllenNLPLSTMLayer.Options)
+        conv_options: ConvEncoder.Options = field(default_factory=ConvEncoder.Options)
 
 
 class CharLSTMLayer(Module):
@@ -153,7 +278,8 @@ class CharLSTMLayer(Module):
         self.char_lstm = LSTMLayer(input_size=dim_char_input,
                                    hidden_size=input_size // 2,
                                    num_layers=num_layers,
-                                   input_keep_prob=dropout,
+                                   input_keep_prob=1 - dropout,
+                                   first_dropout=dropout,
                                    recurrent_keep_prob=1.0
                                    )
 
@@ -170,7 +296,36 @@ class CharLSTMLayer(Module):
             batch_size, max_sent_length, -1)
 
 
-char_embeddings = {"rnn": CharLSTMLayer}
+class CharCNNLayer(Module):
+    @dataclass
+    class Options(OptionsBase):
+        char_filters: "Character CNN filters" = field(default_factory=lambda: {
+            1: 256, 2: 256, 3: 256, 4: 128, 5: 128})
+        dropout: "Character Embedding Dropout" = 0
+
+    def __init__(self, dim_char_input, input_size, num_layers, dropout):
+        super(CharCNNLayer, self).__init__()
+        self.char_lstm = LSTMLayer(input_size=dim_char_input,
+                                   hidden_size=input_size // 2,
+                                   num_layers=num_layers,
+                                   input_keep_prob=1 - dropout,
+                                   recurrent_keep_prob=1.0
+                                   )
+
+    def forward(self, char_lengths, char_embeded_4d: Tensor, reuse=False):
+        batch_size, max_sent_length, max_characters, embed_size = char_embeded_4d.shape
+        char_lengths_1d = char_lengths.view(batch_size * max_sent_length)
+
+        # batch_size * bucket_size, max_characters, embed_size
+        char_embeded_3d = char_embeded_4d.view(
+            batch_size * max_sent_length,
+            max_characters, embed_size)
+        return self.char_lstm(char_embeded_3d, char_lengths_1d,
+                              return_sequence=False).view(
+            batch_size, max_sent_length, -1)
+
+
+char_embeddings = {"rnn": CharLSTMLayer, "cnn": CharCNNLayer}
 
 
 class CharacterEmbedding(BranchSelect):
@@ -180,6 +335,7 @@ class CharacterEmbedding(BranchSelect):
     class Options(BranchSelect.Options):
         type: "Character Embedding Type" = argfield("rnn", choices=char_embeddings)
         rnn_options: CharLSTMLayer.Options = field(default_factory=CharLSTMLayer.Options)
+        cnn_options: CharCNNLayer.Options = field(default_factory=CharCNNLayer.Options)
         max_char: int = 20
 
 
@@ -270,3 +426,9 @@ class ExternalContextualEmbedding(BranchSelect):
         type: "Embedding Type" = argfield("none", choices=list(external_contextual_embeddings.keys()))
         elmo_options: ELMoPlugin.Options = argfield(default_factory=ELMoPlugin.Options)
         bert_options: BERTPlugin.Options = argfield(default_factory=BERTPlugin.Options)
+
+
+if __name__ == '__main__':
+    lstm = AllenNLPLSTMLayer(100, 100, 3, 0.5, 0.5, False)
+    lengths, _ = torch.sort(-torch.randint(0, 9, [8]))
+    lstm(torch.randn(8, 10, 100), -lengths)
