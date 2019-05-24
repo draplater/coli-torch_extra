@@ -1,15 +1,44 @@
 from abc import ABCMeta
+from distutils.version import StrictVersion
+from typing import List, Dict
 
 import torch
 from torch.nn import Module, Embedding, Linear
 
 from coli.basic_tools.common_utils import NoPickle
 from coli.data_utils import dataset
-import torch.nn.functional as F
-
-from coli.data_utils.dataset import SentenceFeaturesBase
 from coli.data_utils.embedding import read_embedding
 from coli.torch_extra.utils import pad_and_stack_1d
+
+try:
+    torch_version = StrictVersion(torch.__version__)
+except ValueError:
+    torch_version = StrictVersion("1.1.0")
+
+if torch_version >= StrictVersion("1.1.0"):
+    @torch.jit.script
+    class TorchDictionary(object):
+        def __init__(self, dict_input: Dict[str, int]):
+            self.dict = dict_input
+
+        def lookup(self, tokens: List[str], padded_length: int,
+                   default: int, dtype: int = torch.int64,
+                   start_and_stop: bool = False):
+            ret = torch.zeros([padded_length + (2 if start_and_stop else 0)],
+                              dtype=dtype)
+            if start_and_stop:
+                ret[0] = self.dict.get("___START___", default)
+            idx = 1 if start_and_stop else 0
+            for idx in range(len(tokens)):
+                ret[idx] = self.dict.get(tokens[idx], default)
+            if start_and_stop:
+                ret[idx + 1] = self.dict.get("___END___", default)
+
+            return ret
+else:
+    class TorchDictionary(object):
+        def __init__(self, dict_input: Dict[str, int]):
+            raise Exception("requires pytorch > 1.1.0")
 
 
 def lookup_list(tokens_itr, token_dict, padded_length,
@@ -71,8 +100,9 @@ class ExternalEmbeddingPlugin(InputPluginBase):
         # noinspection PyCallingNonCallable
         vectors = torch.tensor(vectors_py, dtype=torch.float32)
 
+        # prevent .cuda()
         # noinspection PyReturnFromInit
-        self.embedding = NoPickle([Embedding.from_pretrained(vectors, freeze=True)])
+        self.embedding_ = [NoPickle(Embedding.from_pretrained(vectors, freeze=True))]
 
         if self.project_to:
             self.projection = Linear(self.output_dim, self.project_to)
@@ -94,7 +124,7 @@ class ExternalEmbeddingPlugin(InputPluginBase):
         feed_dict[pls.words_pretrained] = pad_and_stack_1d([i.extra["words_pretrained"] for i in batch_sentences])
 
     def forward(self, feed_dict):
-        ret = self.embedding[0](feed_dict.words_pretrained.cpu())
+        ret = self.embedding_[0](feed_dict.words_pretrained.cpu())
         if self.gpu:
             ret = ret.cuda()
         if hasattr(self, "projection"):
