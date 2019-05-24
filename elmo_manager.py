@@ -119,10 +119,9 @@ class ELMoPlugin(InputPluginBase):
             self.elmo.scalar_mix_0.gamma.requires_grad = False
 
     def process_sentence_feature(self, sent, sent_feature: SentenceFeaturesBase,
-                                 padded_length, start_and_end):
+                                 padded_length, start_and_end=False):
         bilm_chars_padded = torch.from_numpy(self.vocab.get_chars_input(
-            sent.words, padded_length,
-            boundaries=start_and_end))
+            sent.words, padded_length))
         sent_feature.extra["bilm_characters"] = bilm_chars_padded
 
     def process_batch(self, pls, feed_dict, batch_sentences):
