@@ -34,18 +34,18 @@ class SentenceEmbeddings(Module):
         self.plugins = ModuleDict(plugins) if plugins is not None else {}
 
         # embedding
-        input_dims = []
+        input_dims = {}
         if hparams.dim_word != 0:
             self.word_embeddings = Embedding(
                 len(statistics.words), hparams.dim_word, padding_idx=0)
             self.word_dropout = FeatureDropout(hparams.word_dropout)
-            input_dims.append(hparams.dim_word)
+            input_dims["word"] = hparams.dim_word
 
         if hparams.dim_postag != 0:
             self.pos_embeddings = Embedding(
                 len(statistics.postags), hparams.dim_postag, padding_idx=0)
             self.pos_dropout = FeatureDropout(hparams.postag_dropout)
-            input_dims.append(hparams.dim_postag)
+            input_dims["postag"] = hparams.dim_postag
 
         if hparams.dim_char > 0:
             self.bilm = None
@@ -55,21 +55,23 @@ class SentenceEmbeddings(Module):
                                                        dim_char_input=hparams.dim_char_input,
                                                        input_size=hparams.dim_char)
             if not hparams.replace_unk_with_chars:
-                input_dims.append(hparams.dim_char)
+                input_dims["char"] = hparams.dim_char
             else:
                 assert hparams.dim_word == hparams.dim_char
+        else:
+            self.character_lookup = None
 
-        for plugin in self.plugins.values():
+        for name, plugin in self.plugins.items():
             if hparams.mode == "concat":
-                input_dims.append(plugin.output_dim)
+                input_dims[name] = plugin.output_dim
 
         if hparams.mode == "concat":
-            self.output_dim = sum(input_dims)
+            self.output_dim = sum(input_dims.values())
         else:
             assert hparams.mode == "add"
-            uniq_input_dims = list(set(input_dims))
+            uniq_input_dims = list(set(input_dims.values()))
             if len(uniq_input_dims) != 1:
-                raise ValueError(f"Different input dims: {uniq_input_dims}")
+                raise ValueError(f"Different input dims: {input_dims}")
             self.output_dim = uniq_input_dims[0]
 
         self.input_layer_norm = LayerNorm(self.output_dim, eps=1e-6) \
@@ -85,7 +87,7 @@ class SentenceEmbeddings(Module):
     def forward(self, inputs, unk_idx=1):
         all_features = []
 
-        if self.hparams.dim_char:
+        if self.character_lookup is not None:
             # use character embedding instead
             # batch_size, bucket_size, word_length, embedding_dims
             char_embeded_4d = self.character_lookup(inputs.chars)
