@@ -20,7 +20,8 @@ from coli.basic_tools.dataclass_argparse import argfield, pretty_format
 from coli.basic_tools.logger import log_to_file
 from coli.parser_tools.magic_pack import read_script, write_script, get_codes
 from coli.parser_tools.parser_base import DependencyParserBase, DF
-from coli.data_utils.dataset import SentenceFeaturesBase, bucket_types, SentenceBucketsBase, HParamsBase, DataFormatBase
+from coli.data_utils.dataset import SentenceFeaturesBase, bucket_types, SentenceBucketsBase, HParamsBase, \
+    DataFormatBase, SimpleSentenceBuckets, StreamingSentenceBuckets
 from coli.torch_extra.bert_manager import BERTPlugin
 from coli.torch_extra.dataset import ExternalEmbeddingPlugin
 from coli.torch_extra.elmo_manager import ELMoPlugin
@@ -100,7 +101,8 @@ class PyTorchParserBase(Generic[DF, SF], DependencyParserBase[DF], metaclass=ABC
 
         # prevent source code change when training
         if parser.codes is None:
-            parser.codes = get_codes()
+            parser.codes = get_codes(os.path.join(
+                os.path.dirname(__file__), "../../"))
 
         while True:
             current_step = parser.global_step
@@ -136,7 +138,8 @@ class PyTorchParserBase(Generic[DF, SF], DependencyParserBase[DF], metaclass=ABC
     def save(self, prefix, latest_filename=None):
         # prevent source code change when training
         if self.codes is None:
-            self.codes = get_codes()
+            self.codes = get_codes(os.path.join(
+                os.path.dirname(__file__), "../../"))
 
         with open(prefix, "wb") as f:
             # noinspection PyTypeChecker
@@ -166,6 +169,10 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
     class Options(PyTorchParserBase.Options):
         embed_file: str = argfield(None, predict_time=True, predict_default=None)
         gpu: bool = argfield(False, predict_time=True, predict_default=False)
+        bucket_type: "bucket_types" = argfield(predict_default="streaming",
+                                               choices=bucket_types,
+                                               train_time=False,
+                                               predict_time=True)
         hparams: Optional["SimpleParser.HParams"] = argfield(default_factory=lambda: SimpleParser.HParams())
 
     def __init__(self, args: OptionsType, data_train):
@@ -191,8 +198,10 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
         self.grad_clip_threshold = np.inf if self.hparams.learning.clip_grad_norm == 0 \
             else self.hparams.learning.clip_grad_norm
 
-    def get_optimizer_and_scheduler(self, trainable_params):
-        optimizer = self.hparams.optimizer.get(trainable_params)
+    def get_optimizer_and_scheduler(self, trainable_params, hparams=None):
+        if hparams is None:
+            hparams = self.hparams.optimizer
+        optimizer = hparams.get(trainable_params)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, 'max',
             factor=self.hparams.learning.step_decay_factor,
@@ -234,11 +243,12 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
                 to_cuda(feed_dict)
             self.schedule_lr(self.global_step)
             output = self.network(batch_sents, AttrDict(feed_dict))
-            total_loss += output.loss.detach()
-            sent_count += output.sent_count
             if self.hparams.learning.update_every > 1:
                 output.loss /= self.hparams.learning.update_every
             output.loss.backward()
+            total_loss += output.loss.detach()
+            sent_count += output.sent_count
+            del output
             if self.global_step % self.hparams.learning.update_every != 0:
                 self.global_step += 1
                 continue
@@ -279,7 +289,7 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
         best_output_file = self.get_output_name(
             self.args.output, filename, "best")
         sys.stdout.write("\n")
-        outputs = self.predict_bucket(buckets)
+        outputs = list(self.predict_bucket(buckets))
         self.write_result(output_file, outputs)
         self.evaluate_and_update_best_score(
             data, filename, outputs, output_file, best_output_file,
@@ -328,16 +338,25 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
             shutil.copyfile(log_file, best_output_file + ".txt")
         else:
             self.logger.info("No best score: {:.2f} <= {:.2f}".format(score, last_best_score))
+        return score
 
     # noinspection PyMethodOverriding
     def predict_bucket(self, bucket):
-        outputs: List[Any] = [None for _ in range(len(bucket))]
-        for sent_feature, answer in self.get_parsed(bucket):
-            outputs[sent_feature.original_idx] = self.merge_answer(sent_feature, answer)
-        return outputs
+        if isinstance(bucket, SimpleSentenceBuckets) or isinstance(bucket, StreamingSentenceBuckets):
+            for sent_feature, answer in self.get_parsed(bucket):
+                yield self.merge_answer(sent_feature, answer)
+        else:
+            outputs: List[Any] = []
+            for sent_feature, answer in self.get_parsed(bucket):
+                if len(outputs) < sent_feature.original_idx + 1:
+                    outputs.extend([None] * (sent_feature.original_idx + 1 - len(outputs)))
+                outputs[sent_feature.original_idx] = self.merge_answer(sent_feature, answer)
+            yield from outputs
 
     def post_load(self, new_options):
         self.options.__dict__.update(new_options.__dict__)
+        # TODO: temp solution to change bucket type when predict
+        self.hparams.bucket_type = self.args.bucket_type
 
         if "external_embedding" in self.plugins:
             assert new_options.embed_file, "Embedding file is required"
