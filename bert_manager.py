@@ -118,7 +118,7 @@ class BERTPlugin(InputPluginBase):
         pooling_method = getattr(self, "pooling_method", "last")
         feed_dict["bert_tokens"] = pad_and_stack_1d(
             [i.extra["bert_tokens"] for i in batch_sentences])
-        feed_dict["bert_word_ends"] = torch.stack(
+        feed_dict["bert_word_ends"] = pad_and_stack_1d(
             [i.extra["bert_word_ends"] for i in batch_sentences])
 
     def forward(self, feed_dict):
