@@ -10,7 +10,7 @@ from torch.nn import init as init, ModuleList, LayerNorm, Module
 import torch.nn.init as I
 
 from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
-from coli.torch_extra.layers import FeatureDropout2
+from coli.torch_extra.dropout import FeatureDropout2
 
 
 @torch.jit.script

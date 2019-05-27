@@ -3,7 +3,8 @@ from dataclasses import field, dataclass
 from torch.nn import Module, ModuleDict, Embedding, LayerNorm
 
 from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
-from coli.torch_extra.layers import CharacterEmbedding, FeatureDropout
+from coli.torch_extra.layers import CharacterEmbedding
+from coli.torch_extra.dropout import FeatureDropout
 
 
 class SentenceEmbeddings(Module):

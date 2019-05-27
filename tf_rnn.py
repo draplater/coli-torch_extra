@@ -7,7 +7,7 @@ from torch import nn, Tensor
 import torch.nn.init as I
 import torch.nn.functional as F
 from torch.jit import script_method, ScriptModule
-from torch.nn import LayerNorm, ModuleList, Sequential
+from torch.nn import LayerNorm, ModuleList, Sequential, LSTMCell, Parameter
 
 from coli.torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
 
@@ -60,7 +60,7 @@ class NormalLSTMCell(ScriptModule):
     def __init__(self, input_size, hidden_size,
                  # input_keep_prob=1.0, recurrent_keep_prob=1.0,
                  weight_initializer=I.orthogonal_,
-                 forget_bias=0.0,
+                 forget_bias=1.0,
                  activation=torch.tanh):
         super().__init__()
         self.input_size = input_size
@@ -71,27 +71,43 @@ class NormalLSTMCell(ScriptModule):
         self.activation = activation
         self.forget_bias = forget_bias
 
-        self.wx = nn.Linear(input_size, 4 * hidden_size, bias=True)
-        self.wh = nn.Linear(self.hidden_size, 4 * hidden_size, bias=True)
+        # self.wx = nn.Linear(input_size, 4 * hidden_size, bias=True)
+        # self.wh = nn.Linear(self.hidden_size, 4 * hidden_size, bias=True)
+        self.weight_ih = Parameter(torch.Tensor(4 * hidden_size, input_size))
+        self.weight_hh = Parameter(torch.Tensor(4 * hidden_size, hidden_size))
+        self.bias_ih = Parameter(torch.Tensor(4 * hidden_size))
+        self.bias_hh = Parameter(torch.Tensor(4 * hidden_size))
         self.reset_parameters()
 
     def reset_parameters(self):
-        self.weight_initializer(self.wx.weight)
-        self.weight_initializer(self.wh.weight)
-        I.zeros_(self.wx.bias)
-        I.zeros_(self.wh.bias)
+        try:
+            from allennlp.nn.initializers import block_orthogonal
+            block_orthogonal(self.weight_ih, [self.hidden_size, self.input_size])
+            block_orthogonal(self.weight_hh, [self.hidden_size, self.hidden_size])
+        except ImportError:
+            self.weight_initializer(self.weight_ih)
+            self.weight_initializer(self.weight_hh)
+        I.zeros_(self.bias_hh)
+        I.zeros_(self.bias_ih)
 
     @script_method
     def forward(self, inputs: Tensor, h_prev: Tensor, c_prev: Tensor) -> Tuple[Tensor, Tensor]:
-        lstm_matrix = self.wx(inputs) + self.wh(h_prev)
+        lstm_matrix = torch.matmul(inputs, self.weight_ih.t()) + self.bias_ih + \
+                      torch.matmul(h_prev, self.weight_hh.t()) + self.bias_hh
         i, j, f, o = torch.split(
             lstm_matrix,
             lstm_matrix.shape[1] // 4,
-            dim=1)
+            dim=-1)
         c = torch.sigmoid(f + self.forget_bias) * c_prev + \
             torch.sigmoid(i) * self.activation(j)
         h = torch.sigmoid(o) * self.activation(c)
         return h, c
+        # noinspection PyProtectedMember
+        # return torch.lstm_cell(
+        #     inputs, [h_prev, c_prev],
+        #     self.weight_ih, self.weight_hh,
+        #     self.bias_ih, self.bias_hh
+        # )
 
     def extra_repr(self):
         return 'input_size={}, hidden_size={}'.format(
@@ -120,7 +136,9 @@ class DynamicRNN(ScriptModule):
     def forward(self, sequence_tensor: Tensor, batch_lengths: Tensor):
         total_timesteps = int(sequence_tensor.shape[0])
         batch_size = int(sequence_tensor.shape[1])
-        output_accumulator = torch.zeros([total_timesteps, batch_size, self.hidden_size],
+        # output_accumulator = torch.zeros([total_timesteps, batch_size, self.hidden_size],
+        #                                  dtype=sequence_tensor.dtype, device=sequence_tensor.device)
+        output_accumulator = torch.zeros([0, batch_size, self.hidden_size],
                                          dtype=sequence_tensor.dtype, device=sequence_tensor.device)
         full_batch_previous_memory = torch.zeros([batch_size, self.hidden_size],
                                                  dtype=sequence_tensor.dtype, device=sequence_tensor.device)
@@ -128,11 +146,12 @@ class DynamicRNN(ScriptModule):
                                                 dtype=sequence_tensor.dtype, device=sequence_tensor.device)
 
         if self.training and self.input_keep_prob < 1.0:
-            input_noise = F.dropout(torch.ones([1, batch_size, sequence_tensor.shape[-1]],
-                                               dtype=sequence_tensor.dtype, device=sequence_tensor.device),
-                                    1 - self.input_keep_prob, self.training
-                                    )
-            sequence_tensor = sequence_tensor * input_noise
+            # input_noise = F.dropout(torch.ones([1, batch_size, sequence_tensor.shape[-1]],
+            #                                    dtype=sequence_tensor.dtype, device=sequence_tensor.device),
+            #                         1 - self.input_keep_prob, self.training
+            #                         )
+            # sequence_tensor = sequence_tensor * input_noise
+            sequence_tensor = F.dropout(sequence_tensor, 1 - self.input_keep_prob, self.training)
 
         if self.training and self.recurrent_keep_prob < 1.0:
             recurrent_noise = F.dropout(torch.ones([batch_size, self.hidden_size],
@@ -181,9 +200,16 @@ class DynamicRNN(ScriptModule):
                 # We've been doing computation with less than the full batch, so here we create a new
                 # variable for the the whole batch at this timestep and insert the result for the
                 # relevant elements of the batch into it.
-                full_batch_previous_memory[:(current_length_index + 1)] = memory
-                full_batch_previous_state[:(current_length_index + 1)] = timestep_output
-                output_accumulator[index, :(current_length_index + 1)] = timestep_output
+                # full_batch_previous_memory = full_batch_previous_memory.clone()
+                # full_batch_previous_state = full_batch_previous_state.clone()
+                # full_batch_previous_memory[:(current_length_index + 1)] = memory
+                # full_batch_previous_state[:(current_length_index + 1)] = timestep_output
+                full_batch_previous_memory = torch.cat([memory[:current_length_index + 1],
+                                                        full_batch_previous_memory[current_length_index + 1:]], 0)
+                full_batch_previous_state = torch.cat([timestep_output[:current_length_index + 1],
+                                                       full_batch_previous_state[current_length_index + 1:]], 0)
+                output_accumulator = torch.cat([output_accumulator, full_batch_previous_memory.unsqueeze(0)], 0)
+                # output_accumulator[index, :(current_length_index + 1)] = timestep_output
 
         # Mimic the pytorch API by returning state in the following shape:
         # (num_layers * num_directions, batch_size, hidden_size). As this
@@ -233,7 +259,7 @@ class UniDirLSTMLayer(ScriptModule):
 
 
 class BiLSTMLayer(ScriptModule):
-    __constants__ = ["use_layer_norm"]
+    __constants__ = ["use_layer_norm", "input_keep_prob"]
 
     def __init__(self,
                  cell_class,
@@ -245,12 +271,12 @@ class BiLSTMLayer(ScriptModule):
         super(BiLSTMLayer, self).__init__()
         self.forward_layer = DynamicRNN(
             cell_class(input_size, hidden_size),
-            input_keep_prob,
+            1.0,
             recurrent_keep_prob,
             go_forward=True)
         self.backward_layer = DynamicRNN(
             cell_class(input_size, hidden_size),
-            input_keep_prob,
+            1.0,
             recurrent_keep_prob,
             go_forward=False)
         self.use_layer_norm = layer_norm
@@ -260,8 +286,16 @@ class BiLSTMLayer(ScriptModule):
         else:
             self.layer_norm = Identity()
 
+        self.input_keep_prob = float(input_keep_prob)
+
     @script_method
     def forward(self, seqs, lengths):
+        if self.input_keep_prob < 1.0:
+            input_noise = F.dropout(torch.ones([1, seqs.shape[1], seqs.shape[-1]],
+                                               dtype=seqs.dtype, device=seqs.device),
+                                    1 - self.input_keep_prob, self.training
+                                    )
+            seqs = seqs * input_noise
         forward_output = self.forward_layer(seqs, lengths)
         backward_output = self.backward_layer(seqs, lengths)
         output_seqs = torch.cat([forward_output, backward_output], -1)
@@ -305,8 +339,6 @@ class LSTM(ScriptModule):
                  bidirectional=True
                  ) -> None:
         super(LSTM, self).__init__()
-
-        # Required to be wrapped with a :class:`PytorchSeq2SeqWrapper`.
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
