@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from dataclasses import dataclass, field
 from torch import Tensor
+from torch.jit import ScriptModule, script_method
 from torch.nn import Embedding, Module, Dropout, LayerNorm, Sequential, Linear, ReLU, ModuleList, Conv1d
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
@@ -426,6 +427,30 @@ class ExternalContextualEmbedding(BranchSelect):
         type: "Embedding Type" = argfield("none", choices=list(external_contextual_embeddings.keys()))
         elmo_options: ELMoPlugin.Options = argfield(default_factory=ELMoPlugin.Options)
         bert_options: BERTPlugin.Options = argfield(default_factory=BERTPlugin.Options)
+
+
+class FeatureDropout2(ScriptModule):
+    """
+    Feature-level dropout: takes an input of size len x num_features and drops
+    each feature with probabibility p. A feature is dropped across the full
+    portion of the input that corresponds to a single batch element.
+    """
+
+    def __init__(self, p=0.5, inplace=False):
+        super().__init__()
+        if p < 0 or p > 1:
+            raise ValueError("dropout probability has to be between 0 and 1, "
+                             "but got {}".format(p))
+        self.p = p
+        self.inplace = inplace
+        self.dropout = Dropout(p)
+
+    @script_method
+    def forward(self, input: Tensor):
+        noise = self.dropout(torch.ones(input.shape[0], input.shape[2],
+                                        device=input.device)
+                             ).unsqueeze(-2).expand(-1, input.shape[1], -1)
+        return input * noise
 
 
 if __name__ == '__main__':
