@@ -13,7 +13,7 @@ from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
 from coli.data_utils.dataset import SentenceFeaturesBase
 from coli.torch_extra.dataset import InputPluginBase
 from coli.torch_extra.utils import pad_and_stack_1d
-from coli.torch_span.layers import FeatureDropout
+from coli.torch_extra.layers import FeatureDropout
 
 global_elmo_cache = WeakValueDictionary()
 
