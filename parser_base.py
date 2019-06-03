@@ -252,7 +252,6 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
             if self.global_step % self.hparams.learning.update_every != 0:
                 self.global_step += 1
                 continue
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.trainable_parameters, self.grad_clip_threshold)
             # noinspection PyArgumentList
             self.optimizer.step()
             self.optimizer.zero_grad()
@@ -263,8 +262,7 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
                 start_time = end_time
                 self.progbar.update(
                     self.global_step,
-                    exact=[("Loss", total_loss), ("Speed", speed), ("Epoch", self.global_epoch),
-                           ("G", grad_norm)]
+                    exact=[("Loss", total_loss), ("Speed", speed), ("Epoch", self.global_epoch)]
                 )
                 sent_count = 0
                 total_loss = 0.0
