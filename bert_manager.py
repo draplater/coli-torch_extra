@@ -5,7 +5,7 @@ import torch
 from dataclasses import dataclass
 from torch.nn import Linear
 
-from coli.basic_tools.common_utils import NullContextManager
+from coli.basic_tools.common_utils import NullContextManager, NoPickle, AttrDict
 from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
 from coli.data_utils.dataset import SentenceFeaturesBase, START_OF_SENTENCE, END_OF_SENTENCE
 from coli.torch_extra.dataset import InputPluginBase
@@ -38,12 +38,13 @@ class BERTPlugin(InputPluginBase):
     @dataclass
     class Options(OptionsBase):
         bert_model: str = argfield(predict_time=True)
+        student_model: str = argfield(default=None, predict_time=True)
         lower: bool = True
         project_to: Optional[int] = None
         feature_dropout: float = 0.0
         pooling_method: Optional[str] = "last"
 
-    def __init__(self, bert_model, lower=True, project_to=None,
+    def __init__(self, bert_model, student_model=None, lower=True, project_to=None,
                  feature_dropout=0.0,
                  pooling_method="last",
                  gpu=False, requires_grad=False):
@@ -52,7 +53,7 @@ class BERTPlugin(InputPluginBase):
         self.requires_grad = requires_grad
         self.pooling_method = pooling_method
 
-        self.reload(bert_model, gpu)
+        self.reload(bert_model, gpu, student_model)
 
         if feature_dropout > 0:
             self.feature_dropout_layer = FeatureDropout(feature_dropout)
@@ -63,20 +64,38 @@ class BERTPlugin(InputPluginBase):
         else:
             self.projection = None
 
-    def reload(self, bert_model, gpu):
+    def reload(self, bert_model, gpu, student_model=None):
         from pytorch_pretrained_bert import BertTokenizer, BertModel
         if bert_model.endswith('.tar.gz'):
-            self.tokenizer = BertTokenizer.from_pretrained(
+            self.tokenizer = NoPickle(BertTokenizer.from_pretrained(
                 bert_model.replace('.tar.gz', '-vocab.txt'),
-                do_lower_case=self.lower)
+                do_lower_case=self.lower))
         else:
-            self.tokenizer = BertTokenizer.from_pretrained(bert_model, do_lower_case=self.lower)
+            self.tokenizer = NoPickle(
+                BertTokenizer.from_pretrained(bert_model, do_lower_case=self.lower))
 
         self.bert = BertModel.from_pretrained(bert_model)
         if gpu:
             self.bert = self.bert.cuda()
         self.output_dim = self.bert.pooler.dense.in_features
         self.max_len = self.bert.embeddings.position_embeddings.num_embeddings
+
+        if not self.requires_grad:
+            self.bert = NoPickle(self.bert)
+            for p in self.bert.parameters():
+                p.requires_grad = False
+
+        if student_model is not None:
+            self.word_embeddings = self.bert.embeddings.word_embeddings
+            from local_scripts.bert_distillation import BertDistillator
+            self.student_model = BertDistillator.load(
+                student_model, AttrDict(gpu=gpu)).network
+            if not self.requires_grad:
+                self.word_embeddings = NoPickle(self.word_embeddings)
+                self.student_model = NoPickle(self.student_model)
+            self.bert = None
+        else:
+            self.student_model = None
 
     def process_sentence_feature(self, sent, sent_feature: SentenceFeaturesBase,
                                  padded_length, start_and_end=False):
@@ -125,9 +144,17 @@ class BERTPlugin(InputPluginBase):
         pooling_method = getattr(self, "pooling_method", "last")
         all_input_mask = feed_dict.bert_tokens.gt(0)
         with (torch.no_grad() if not self.requires_grad else NullContextManager()):
-            all_encoder_layers, _ = self.bert(feed_dict.bert_tokens,
-                                              attention_mask=all_input_mask)
-            features = all_encoder_layers[-1]
+            if self.student_model is None:
+                all_encoder_layers, _ = self.bert(feed_dict.bert_tokens,
+                                                  attention_mask=all_input_mask)
+                features = all_encoder_layers[-1]
+            else:
+                # use student model instead of original BERT
+                word_embeddings = self.word_embeddings(
+                    feed_dict.bert_tokens)
+                sent_lengths = all_input_mask.int().sum(-1)
+                features = self.student_model.projection(self.student_model.lstm(
+                    word_embeddings, sent_lengths))
             if pooling_method == "last":
                 word_features = broadcast_gather(features, 1, feed_dict.bert_word_ends)
             elif pooling_method == "none":
