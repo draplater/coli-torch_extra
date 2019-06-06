@@ -394,25 +394,31 @@ class TransformerEncoder(ScriptModule):
         map_location_2 = inspect.currentframe().f_back.f_locals.get("map_location")
         if map_location_2:
             map_location = map_location_2
-        ret = torch.jit.load(f, map_location=map_location)
 
+        ret = torch.jit.load(f, map_location=map_location)
         parameters = dict(ret.named_parameters())
         try:
             ret.output_dim = parameters["layers.1.w_2c.bias"].shape[-1] + parameters["layers.1.w_2p.bias"].shape[-1]
         except KeyError:
             ret.output_dim = parameters["layers.1.w_2.bias"].shape[-1]
-
         ret.__class__ = cls
+        return ret
+
+    @classmethod
+    def load_nojit(cls, data):
+        print("Load transformer no jit")
+        ret = cls.__new__(cls)
+        ret.__dict__ = data
         return ret
 
     def __reduce__(self):
         f = BytesIO()
         if ScriptModule is not Module:
             torch.jit.save(self, f)
+            f.seek(0)
+            return self.__class__.load_func, (f.read(),)
         else:
-            torch.save(self.state_dict(), f)
-        f.seek(0)
-        return self.__class__.load_func, (f.read(),)
+            return self.__class__.load_nojit, (self.__dict__,)
 
 
 Encoder = TransformerEncoder
