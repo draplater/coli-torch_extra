@@ -28,6 +28,13 @@ class FeatureDropout2(ScriptModule):
                              ).unsqueeze(-2).expand(-1, input.shape[1], -1)
         return input * noise
 
+    @classmethod
+    def load_func(cls, p, inplace):
+        return cls(p, inplace)
+
+    def __reduce__(self):
+        return self.__class__.load_func, (self.p, self.inplace)
+
 
 class FeatureDropoutFunction(InplaceFunction):
     @classmethod
