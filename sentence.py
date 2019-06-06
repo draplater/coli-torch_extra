@@ -4,7 +4,7 @@ from torch.nn import Module, ModuleDict, Embedding, LayerNorm
 
 from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
 from coli.torch_extra.layers import CharacterEmbedding
-from coli.torch_extra.dropout import FeatureDropout
+from coli.torch_extra.dropout import FeatureDropout2
 
 
 class SentenceEmbeddings(Module):
@@ -38,13 +38,13 @@ class SentenceEmbeddings(Module):
         if hparams.dim_word != 0:
             self.word_embeddings = Embedding(
                 len(statistics.words), hparams.dim_word, padding_idx=0)
-            self.word_dropout = FeatureDropout(hparams.word_dropout)
+            self.word_dropout = FeatureDropout2(hparams.word_dropout)
             input_dims["word"] = hparams.dim_word
 
         if hparams.dim_postag != 0:
             self.pos_embeddings = Embedding(
                 len(statistics.postags), hparams.dim_postag, padding_idx=0)
-            self.pos_dropout = FeatureDropout(hparams.postag_dropout)
+            self.pos_dropout = FeatureDropout2(hparams.postag_dropout)
             input_dims["postag"] = hparams.dim_postag
 
         if hparams.dim_char > 0:
@@ -62,8 +62,7 @@ class SentenceEmbeddings(Module):
             self.character_lookup = None
 
         for name, plugin in self.plugins.items():
-            if hparams.mode == "concat":
-                input_dims[name] = plugin.output_dim
+            input_dims[name] = plugin.output_dim
 
         if hparams.mode == "concat":
             self.output_dim = sum(input_dims.values())
@@ -72,6 +71,7 @@ class SentenceEmbeddings(Module):
             uniq_input_dims = list(set(input_dims.values()))
             if len(uniq_input_dims) != 1:
                 raise ValueError(f"Different input dims: {input_dims}")
+            print(input_dims)
             self.output_dim = uniq_input_dims[0]
 
         self.input_layer_norm = LayerNorm(self.output_dim, eps=1e-6) \
@@ -114,11 +114,11 @@ class SentenceEmbeddings(Module):
             if plugin_output.shape[1] == inputs.words.shape[1] + 2:
                 plugin_output = plugin_output[:, 1:-1]
             # pad external embedding to dim_word
-            if self.mode == "add" and plugin_output.shape[-1] < self.hparams.dim_word:
-                plugin_output = torch.cat(
-                    [plugin_output,
-                     plugin_output.new_zeros(
-                         (*inputs.words.shape, self.hparams.dim_word - plugin_output.shape[-1]))], -1)
+            # if self.mode == "add" and plugin_output.shape[-1] < self.hparams.dim_word:
+            #     plugin_output = torch.cat(
+            #         [plugin_output,
+            #          plugin_output.new_zeros(
+            #              (*inputs.words.shape, self.hparams.dim_word - plugin_output.shape[-1]))], -1)
             all_features.append(plugin_output)
 
         if self.mode == "concat":
