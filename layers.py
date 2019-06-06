@@ -1,23 +1,25 @@
+from collections import UserDict
+from dataclasses import dataclass, field
+
 import numpy as np
 import torch
-from dataclasses import dataclass, field
+import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn import Embedding, Module, Dropout, LayerNorm, Sequential, Linear, ReLU, ModuleList, Conv1d
-import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torch.optim import Adam
 
 from coli.basic_tools.dataclass_argparse import argfield, BranchSelect, OptionsBase
-from coli.torch_extra.bert_manager import BERTPlugin
-from coli.torch_extra.elmo_manager import ELMoPlugin
-from coli.torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
-from coli.torch_extra import tf_rnn
 from coli.basic_tools.logger import default_logger
-from coli.torch_extra.transformer import TransformerEncoder
-
+from coli.torch_extra import tf_rnn
+from coli.torch_extra.adamW import AdamWOptions
+from coli.torch_extra.bert_manager import BERTPlugin
 # for backward compatibility
 # noinspection PyUnresolvedReferences
 from coli.torch_extra.dropout import FeatureDropout, FeatureDropout2
+from coli.torch_extra.elmo_manager import ELMoPlugin
+from coli.torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
+from coli.torch_extra.transformer import TransformerEncoder
 
 
 def get_external_embedding(loader, freeze=True):
@@ -234,7 +236,7 @@ class ConvEncoder(Module):
         if self.embedding_dropout:
             dropout_mask = F.dropout(
                 torch.ones((batch_size, feature_count, 1),
-                          device=seqs_ncl.device, dtype=seqs_ncl.dtype),
+                           device=seqs_ncl.device, dtype=seqs_ncl.dtype),
                 self.embedding_dropout, self.training)
             seqs_ncl *= dropout_mask
         outputs_ncl = seqs_ncl
@@ -358,7 +360,7 @@ class AdamOptions(OptionsBase):
     beta_2: float = 0.999
     eps: float = 1e-8
     weight_decay: float = 0.0
-    amsgrad: float = False
+    amsgrad: bool = False
 
     def get_optimizer(self, trainable_params):
         return Adam(trainable_params,
@@ -369,16 +371,24 @@ class AdamOptions(OptionsBase):
 
 @dataclass
 class OptimizerOptions(OptionsBase):
-    type: str = "adam"
+    type: str = argfield(default="adam", choices=["adam", "adamw"])
     adam_options: AdamOptions = argfield(default_factory=AdamOptions)
+    adamw_options: AdamWOptions = argfield(default_factory=AdamWOptions)
 
     def get(self, trainable_params):
-        assert self.type == "adam", f"Optimizer {self.type} is not support yet"
-        return self.adam_options.get_optimizer(trainable_params)
+        if self.type == "adam":
+            return self.adam_options.get_optimizer(trainable_params)
+        elif self.type == "adamw":
+            return self.adamw_options.get_optimizer(trainable_params)
+        else:
+            raise Exception(f"Optimizer {self.type} is not support yet")
 
     @property
     def learning_rate(self):
-        return self.adam_options.lr
+        if self.type == "adam":
+            return self.adam_options.lr
+        else:
+            return self.adamw_options.lr
 
 
 @dataclass
@@ -432,9 +442,22 @@ class ExternalContextualEmbedding(BranchSelect):
         bert_options: BERTPlugin.Options = argfield(default_factory=BERTPlugin.Options)
 
 
+def smartly_remove_weight_decay(named_parameters):
+    decay_parameters = []
+    non_decay_parameters = []
+    for name, param in named_parameters:
+        if not param.requires_grad:
+            continue
+        if "bias" in name or "norm" in name:
+            non_decay_parameters.append(param)
+        else:
+            decay_parameters.append(param)
+    return [{'params': non_decay_parameters, "weight_decay": 0},
+            {'params': decay_parameters}
+            ]
+
+
 if __name__ == '__main__':
     lstm = AllenNLPLSTMLayer(100, 100, 3, 0.5, 0.5, False)
     lengths, _ = torch.sort(-torch.randint(0, 9, [8]))
     lstm(torch.randn(8, 10, 100), -lengths)
-
-
