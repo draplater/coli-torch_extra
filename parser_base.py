@@ -15,7 +15,7 @@ from torch.nn import Module, Parameter
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from coli.basic_tools.common_utils import T, NoPickle, AttrDict, Progbar
+from coli.basic_tools.common_utils import T, NoPickle, AttrDict, Progbar, IdentityGetAttr
 from coli.basic_tools.dataclass_argparse import argfield, pretty_format
 from coli.basic_tools.logger import log_to_file
 from coli.parser_tools.magic_pack import read_script, write_script, get_codes
@@ -234,6 +234,68 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
         sent_count = 0
         start_time = time.time()
         self.network.train()
+
+        def do_forward_and_backward(batch_sents, feed_dict):
+            stack = [(batch_sents, feed_dict)]
+            batch_devided = False
+            total_count = 0
+            while stack:
+                batch_sents, feed_dict = stack.pop()
+                output = None
+                try:
+                    output = self.network(batch_sents, AttrDict(feed_dict))
+                    if self.hparams.learning.update_every > 1:
+                        output.loss /= self.hparams.learning.update_every
+                    if batch_devided:
+                        output.loss *= output.sent_count
+                        total_count += output.sent_count
+                    output.loss.backward()
+                    output.loss = output.loss.detach()
+                    yield output
+                except RuntimeError as e:
+                    if "CUDA out of memory" not in str(e):
+                        raise
+                    else:
+                        batch_devided = True
+                        self.logger.info(e)
+                        self.logger.info(f"Out of memory with {len(batch_sents)} sentence, "
+                                         f"Max sentence length is {max(len(i.original_obj) for i in batch_sents)}. "
+                                         f"Clear cache, split batch and try again. If this appear frequently, "
+                                         "you should use a smaller batch size.")
+                        if len(batch_sents) == 1:
+                            self.logger.info("Even the smallest batch cause OOM.")
+                            raise
+                        else:
+                            del output
+                            del feed_dict
+                            torch.cuda.empty_cache()
+                            split_point = int(len(batch_sents) / 2)
+                            batch_sents_1 = batch_sents[:split_point]
+                            if batch_sents_1:
+                                # TODO: a better interface for this purpose
+                                feed_dict_1 = train_data.return_batches(
+                                    batch_sents_1, pls=IdentityGetAttr(), batch_size=0, sort_key_func=None,
+                                    original=False, use_sub_batch=False, plugins=self.plugins)
+                                if self.args.gpu:
+                                    to_cuda(feed_dict_1)
+                                stack.append((batch_sents_1, feed_dict_1))
+                                del batch_sents_1, feed_dict_1
+                            batch_sents_2 = batch_sents[split_point:]
+                            if batch_sents_2:
+                                # TODO: a better interface for this purpose
+                                feed_dict_2 = train_data.return_batches(
+                                    batch_sents_2, pls=IdentityGetAttr(), batch_size=0, sort_key_func=None,
+                                    original=False, use_sub_batch=False, plugins=self.plugins)
+                                if self.args.gpu:
+                                    to_cuda(feed_dict_2)
+                                stack.append((batch_sents_2, feed_dict_2))
+                                del batch_sents_2, feed_dict_2
+                        del e
+            if batch_devided:
+                for p in self.network.parameters():
+                    if p.requires_grad and p.grad is not None:
+                        p.grad /= total_count
+
         for batch_sents, feed_dict in train_data.generate_batches(
                 self.hparams.train_batch_size,
                 shuffle=True, original=True, plugins=self.plugins
@@ -242,13 +304,10 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
             if self.args.gpu:
                 to_cuda(feed_dict)
             self.schedule_lr(self.global_step)
-            output = self.network(batch_sents, AttrDict(feed_dict))
-            if self.hparams.learning.update_every > 1:
-                output.loss /= self.hparams.learning.update_every
-            output.loss.backward()
-            total_loss += output.loss.detach()
-            sent_count += output.sent_count
-            del output
+            for output in do_forward_and_backward(batch_sents, feed_dict):
+                total_loss += output.loss.detach() * output.sent_count
+                sent_count += output.sent_count
+                del output
             if self.global_step % self.hparams.learning.update_every != 0:
                 self.global_step += 1
                 continue
@@ -262,7 +321,8 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
                 start_time = end_time
                 self.progbar.update(
                     self.global_step,
-                    exact=[("Loss", total_loss), ("Speed", speed), ("Epoch", self.global_epoch)]
+                    exact=[("Loss", total_loss / sent_count), ("Speed", speed),
+                           ("Epoch", self.global_epoch)]
                 )
                 sent_count = 0
                 total_loss = 0.0
