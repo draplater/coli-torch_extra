@@ -10,7 +10,7 @@ from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
 from coli.data_utils.dataset import SentenceFeaturesBase, START_OF_SENTENCE, END_OF_SENTENCE
 from coli.torch_extra.dataset import InputPluginBase
 from coli.torch_extra.utils import pad_and_stack_1d, broadcast_gather
-from coli.torch_extra.dropout import FeatureDropout
+from coli.torch_extra.dropout import FeatureDropout, FeatureDropout2
 
 BERT_TOKEN_MAPPING = {
     "-LRB-": "(",
@@ -56,7 +56,7 @@ class BERTPlugin(InputPluginBase):
         self.reload(bert_model, gpu, student_model)
 
         if feature_dropout > 0:
-            self.feature_dropout_layer = FeatureDropout(feature_dropout)
+            self.feature_dropout_layer = FeatureDropout2(feature_dropout)
 
         if project_to:
             self.projection = Linear(self.output_dim, project_to, bias=False)

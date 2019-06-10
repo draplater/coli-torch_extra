@@ -13,7 +13,7 @@ from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
 from coli.data_utils.dataset import SentenceFeaturesBase
 from coli.torch_extra.dataset import InputPluginBase
 from coli.torch_extra.utils import pad_and_stack_1d
-from coli.torch_extra.dropout import FeatureDropout
+from coli.torch_extra.dropout import FeatureDropout2
 
 global_elmo_cache = WeakValueDictionary()
 
@@ -88,7 +88,7 @@ class ELMoPlugin(InputPluginBase):
         self.project_to = project_to
         self.reload(path, gpu)
 
-        self.feature_dropout_layer = FeatureDropout(feature_dropout)
+        self.feature_dropout_layer = FeatureDropout2(feature_dropout)
 
         if self.project_to:
             self.projection = Linear(self.output_dim, project_to, bias=False)
