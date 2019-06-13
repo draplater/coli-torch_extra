@@ -27,6 +27,7 @@ from coli.torch_extra.dataset import ExternalEmbeddingPlugin
 from coli.torch_extra.elmo_manager import ELMoPlugin
 from coli.torch_extra.layers import AdvancedLearningOptions, ExternalContextualEmbedding, OptimizerOptions
 from coli.torch_extra.utils import to_cuda
+from tensorboardX import SummaryWriter
 
 BK = TypeVar("BK", bound=SentenceBucketsBase)
 SF = TypeVar("SF", bound=SentenceFeaturesBase)
@@ -193,6 +194,7 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
         self.best_score = 0
 
         self.progbar = NoPickle(Progbar(self.hparams.train_iters, log_func=self.file_logger.info))
+        self.writer = NoPickle(SummaryWriter(f"{self.args.output}/tensorboard-{self.logger_timestamp}/"))
         self.grad_clip_threshold = np.inf if self.hparams.learning.clip_grad_norm == 0 \
             else self.hparams.learning.clip_grad_norm
 
@@ -323,11 +325,13 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
                 end_time = time.time()
                 speed = sent_count / (end_time - start_time)
                 start_time = end_time
+                loss = total_loss / sent_count
                 self.progbar.update(
                     self.global_step,
-                    exact=[("Loss", total_loss / sent_count), ("Speed", speed),
+                    exact=[("Loss", loss), ("Speed", speed),
                            ("Epoch", self.global_epoch)]
                 )
+                self.writer.add_scalar("loss", loss, global_step=self.global_step)
                 sent_count = 0
                 total_loss = 0.0
                 if self.global_step % self.hparams.evaluate_every == 0:
@@ -391,6 +395,7 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
                                        output_file, best_output_file, log_file=None):
         last_best_score = self.best_score
         score = self.evaluate(gold, gold_file_name, outputs, output_file, log_file)
+        self.writer.add_scalar("score", score, global_step=self.global_step)
         if score > last_best_score:
             self.logger.info("New best score: {:.2f} > {:.2f}, saving model...".format(
                 score, last_best_score))
