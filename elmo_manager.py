@@ -57,7 +57,7 @@ def get_elmo(options_file: str,
 class ELMoPlugin(InputPluginBase):
     @dataclass
     class Options(OptionsBase):
-        path: str = argfield(predict_default=True)
+        path: str = argfield(predict_time=True)
         requires_grad: bool = False
         do_layer_norm: bool = False
         dropout: float = 0.5

@@ -16,7 +16,7 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from coli.basic_tools.common_utils import T, NoPickle, AttrDict, Progbar, IdentityGetAttr
-from coli.basic_tools.dataclass_argparse import argfield, pretty_format
+from coli.basic_tools.dataclass_argparse import argfield, pretty_format, merge_predict_time_options
 from coli.basic_tools.logger import log_to_file
 from coli.parser_tools.magic_pack import read_script, write_script, get_codes
 from coli.parser_tools.parser_base import DependencyParserBase, DF
@@ -167,13 +167,11 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
 
     @dataclass
     class Options(PyTorchParserBase.Options):
-        embed_file: str = argfield(None, predict_time=True, predict_default=None)
+        embed_file: Optional[str] = argfield(None, predict_time=True, predict_default=None)
         gpu: bool = argfield(False, predict_time=True, predict_default=False)
-        bucket_type: "bucket_types" = argfield(predict_default="streaming",
-                                               choices=bucket_types,
-                                               train_time=False,
-                                               predict_time=True)
-        hparams: Optional["SimpleParser.HParams"] = argfield(default_factory=lambda: SimpleParser.HParams())
+        hparams: Any = argfield(
+            default_factory=lambda: SimpleParser.HParams(),
+        )
 
     def __init__(self, args: OptionsType, data_train):
         super(SimpleParser, self).__init__(args, data_train)
@@ -197,6 +195,9 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
         self.progbar = NoPickle(Progbar(self.hparams.train_iters, log_func=self.file_logger.info))
         self.grad_clip_threshold = np.inf if self.hparams.learning.clip_grad_norm == 0 \
             else self.hparams.learning.clip_grad_norm
+
+        assert self.hparams.print_every % self.hparams.learning.update_every == 0
+        assert self.hparams.evaluate_every % self.hparams.print_every == 0
 
     def get_optimizer_and_scheduler(self, trainable_params, hparams=None):
         if hparams is None:
@@ -415,19 +416,21 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
             yield from outputs
 
     def post_load(self, new_options):
-        self.options.__dict__.update(new_options.__dict__)
-        # TODO: temp solution to change bucket type when predict
-        self.hparams.bucket_type = self.args.bucket_type
+        self.logger.info(f"New options: {pretty_format(new_options, is_training=False)}")
+        merge_predict_time_options(self.options, new_options)
+        self.logger.info(f"Merged Options: {pretty_format(self.options, is_training=False)}")
 
         if "external_embedding" in self.plugins:
             assert new_options.embed_file, "Embedding file is required"
             self.plugins["external_embedding"].reload(new_options.embed_file, gpu=new_options.gpu)
 
-        if "pretrained_contextual" in self.plugins and self.options.bilm_path is not None:
+        if "pretrained_contextual" in self.plugins:
             plugin = self.plugins["pretrained_contextual"]
             if isinstance(plugin, ELMoPlugin):
-                plugin.reload(self.options.bilm_path, self.options.gpu)
+                plugin.reload(self.hparams.pretrained_contextual.elmo_options.path,
+                              self.options.gpu)
             elif isinstance(plugin, BERTPlugin):
-                plugin.reload(self.options.bilm_path, self.options.gpu)
+                plugin.reload(self.hparams.pretrained_contextual.bert_options.bert_model,
+                              self.options.gpu)
             else:
                 raise NotImplementedError(f"{plugin.__class__}")

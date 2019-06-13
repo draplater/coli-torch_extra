@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from torch.nn import Linear
 
 from coli.basic_tools.common_utils import NullContextManager, NoPickle, AttrDict
-from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
+from coli.basic_tools.dataclass_argparse import argfield, OptionsBase, ExistFile
 from coli.data_utils.dataset import SentenceFeaturesBase, START_OF_SENTENCE, END_OF_SENTENCE
 from coli.torch_extra.dataset import InputPluginBase
 from coli.torch_extra.utils import pad_and_stack_1d, broadcast_gather
@@ -37,20 +37,21 @@ BERT_TOKEN_MAPPING = {
 class BERTPlugin(InputPluginBase):
     @dataclass
     class Options(OptionsBase):
-        bert_model: str = argfield(predict_time=True)
+        bert_model: ExistFile = argfield(predict_time=True)
         student_model: str = argfield(default=None, predict_time=True)
-        lower: bool = True
+        lower: bool = False
         project_to: Optional[int] = None
         feature_dropout: float = 0.0
+        finetune_last_n: int = 0
         pooling_method: Optional[str] = "last"
 
-    def __init__(self, bert_model, student_model=None, lower=True, project_to=None,
+    def __init__(self, bert_model, student_model=None, lower=False, project_to=None,
                  feature_dropout=0.0,
                  pooling_method="last",
-                 gpu=False, requires_grad=False):
+                 gpu=False, finetune_last_n=0):
         super().__init__()
         self.lower = lower
-        self.requires_grad = requires_grad
+        self.finetune_tune_last_n = finetune_last_n
         self.pooling_method = pooling_method
 
         self.reload(bert_model, gpu, student_model)
@@ -74,25 +75,29 @@ class BERTPlugin(InputPluginBase):
             self.tokenizer = NoPickle(
                 BertTokenizer.from_pretrained(bert_model, do_lower_case=self.lower))
 
-        self.bert = BertModel.from_pretrained(bert_model)
+        self.bert = NoPickle(BertModel.from_pretrained(bert_model))
         if gpu:
             self.bert = self.bert.cuda()
         self.output_dim = self.bert.pooler.dense.in_features
         self.max_len = self.bert.embeddings.position_embeddings.num_embeddings
 
-        if not self.requires_grad:
-            self.bert = NoPickle(self.bert)
-            for p in self.bert.parameters():
-                p.requires_grad = False
+        for p in self.bert.parameters():
+            p.requires_grad = False
+
+        if self.finetune_tune_last_n > 0:
+            self.finetune_layers = self.bert.encoder.layer[-self.finetune_tune_last_n:]
+            for p in self.finetune_layers.parameters():
+                p.requires_grad = True
 
         if student_model is not None:
             self.word_embeddings = self.bert.embeddings.word_embeddings
             from local_scripts.bert_distillation import BertDistillator
             self.student_model = BertDistillator.load(
                 student_model, AttrDict(gpu=gpu)).network
-            if not self.requires_grad:
-                self.word_embeddings = NoPickle(self.word_embeddings)
-                self.student_model = NoPickle(self.student_model)
+            self.word_embeddings = NoPickle(self.word_embeddings)
+            self.student_model = NoPickle(self.student_model)
+            for p in self.student_model:
+                p.requires_grad = False
             self.bert = None
         else:
             self.student_model = None
@@ -100,7 +105,6 @@ class BERTPlugin(InputPluginBase):
     def process_sentence_feature(self, sent, sent_feature: SentenceFeaturesBase,
                                  padded_length, start_and_end=False):
         keep_boundaries = start_and_end
-        pooling_method = getattr(self, "pooling_method", "last")
         word_pieces = ["[CLS]"]
         word_starts = []
         word_ends = []
@@ -134,33 +138,31 @@ class BERTPlugin(InputPluginBase):
         sent_feature.extra["bert_word_ends"][:len(word_ends)] = torch.tensor(word_ends)
 
     def process_batch(self, pls, feed_dict, batch_sentences):
-        pooling_method = getattr(self, "pooling_method", "last")
         feed_dict["bert_tokens"] = pad_and_stack_1d(
             [i.extra["bert_tokens"] for i in batch_sentences])
         feed_dict["bert_word_ends"] = pad_and_stack_1d(
             [i.extra["bert_word_ends"] for i in batch_sentences])
 
     def forward(self, feed_dict):
-        pooling_method = getattr(self, "pooling_method", "last")
+        pooling_method = self.pooling_method
         all_input_mask = feed_dict.bert_tokens.gt(0)
-        with (torch.no_grad() if not self.requires_grad else NullContextManager()):
-            if self.student_model is None:
-                all_encoder_layers, _ = self.bert(feed_dict.bert_tokens,
-                                                  attention_mask=all_input_mask)
-                features = all_encoder_layers[-1]
-            else:
-                # use student model instead of original BERT
-                word_embeddings = self.word_embeddings(
-                    feed_dict.bert_tokens)
-                sent_lengths = all_input_mask.int().sum(-1)
-                features = self.student_model.projection(self.student_model.lstm(
-                    word_embeddings, sent_lengths))
-            if pooling_method == "last":
-                word_features = broadcast_gather(features, 1, feed_dict.bert_word_ends)
-            elif pooling_method == "none":
-                word_features = features
-            else:
-                raise Exception(f"Invalid pooling method {pooling_method}")
+        if self.student_model is None:
+            all_encoder_layers, _ = self.bert(feed_dict.bert_tokens,
+                                              attention_mask=all_input_mask)
+            features = all_encoder_layers[-1]
+        else:
+            # use student model instead of original BERT
+            word_embeddings = self.word_embeddings(
+                feed_dict.bert_tokens)
+            sent_lengths = all_input_mask.int().sum(-1)
+            features = self.student_model.projection(self.student_model.lstm(
+                word_embeddings, sent_lengths))
+        if pooling_method == "last":
+            word_features = broadcast_gather(features, 1, feed_dict.bert_word_ends)
+        elif pooling_method == "none":
+            word_features = features
+        else:
+            raise Exception(f"Invalid pooling method {pooling_method}")
 
         if self.projection is not None:
             word_features = self.projection(word_features)
