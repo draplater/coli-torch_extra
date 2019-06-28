@@ -1,5 +1,6 @@
 import os
 import pickle
+import random
 import shutil
 import stat
 import sys
@@ -194,7 +195,7 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
         self.best_score = 0
 
         self.progbar = NoPickle(Progbar(self.hparams.train_iters, log_func=self.file_logger.info))
-        self.writer = NoPickle(SummaryWriter(f"{self.args.output}/tensorboard-{self.logger_timestamp}/"))
+        self.writer: SummaryWriter = NoPickle(SummaryWriter(f"{self.args.output}/tensorboard-{self.logger_timestamp}/"))
         self.grad_clip_threshold = np.inf if self.hparams.learning.clip_grad_norm == 0 \
             else self.hparams.learning.clip_grad_norm
 
@@ -356,6 +357,8 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
             self.args.output, filename, "best")
         sys.stdout.write("\n")
         outputs = list(self.predict_bucket(buckets))
+        for sample_idx, sample in enumerate(random.sample(outputs, 3)):
+            self.writer.add_text("sample_outputs", sample.to_string(), self.global_step + sample_idx)
         self.write_result(output_file, outputs)
         self.evaluate_and_update_best_score(
             data, filename, outputs, output_file, best_output_file,
