@@ -5,12 +5,12 @@ import torch
 from dataclasses import dataclass
 from torch.nn import Linear
 
-from coli.basic_tools.common_utils import NullContextManager, NoPickle, AttrDict
+from coli.basic_tools.common_utils import NoPickle, AttrDict
 from coli.basic_tools.dataclass_argparse import argfield, OptionsBase, ExistFile
 from coli.data_utils.dataset import SentenceFeaturesBase, START_OF_SENTENCE, END_OF_SENTENCE
 from coli.torch_extra.dataset import InputPluginBase
 from coli.torch_extra.utils import pad_and_stack_1d, broadcast_gather
-from coli.torch_extra.dropout import FeatureDropout, FeatureDropout2
+from coli.torch_extra.dropout import FeatureDropout2
 
 BERT_TOKEN_MAPPING = {
     "-LRB-": "(",
@@ -38,7 +38,7 @@ class BERTPlugin(InputPluginBase):
     @dataclass
     class Options(OptionsBase):
         bert_model: ExistFile = argfield(predict_time=True)
-        student_model: str = argfield(default=None, predict_time=True)
+        student_model: Optional[str] = argfield(default=None, predict_time=True)
         lower: bool = False
         project_to: Optional[int] = None
         feature_dropout: float = 0.0
