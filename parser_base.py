@@ -238,9 +238,27 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
         stack = [(batch_sents, feed_dict)]
         batch_devided = False
         total_count = 0
+        failure_when_smallest_limit = 3
+        need_gc = False
+        need_empty_cache = False
+
         while stack:
-            batch_sents, feed_dict = stack.pop()
             output = None
+
+            if need_gc:
+                import gc
+                for i in range(3):
+                    gc.collect()
+                need_gc = False
+            if need_empty_cache:
+                for i in range(3):
+                    torch.cuda.empty_cache()
+                    time.sleep(3)
+                need_empty_cache = False
+
+            batch_sents, feed_dict = stack.pop()
+            if self.args.gpu:
+                to_cuda(feed_dict)
             try:
                 output = self.network(batch_sents, AttrDict(feed_dict))
                 # TODO: change bahaviour of update_every
@@ -248,10 +266,11 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
                     output.loss /= self.hparams.learning.update_every
                 if batch_devided:
                     output.loss *= output.sent_count
-                    total_count += output.sent_count
+                    total_count += int(output.sent_count)
                 output.loss.backward()
                 output.loss = output.loss.detach()
                 yield output
+                failure_when_smallest_limit = 3
             except RuntimeError as e:
                 if "CUDA out of memory" not in str(e):
                     raise
@@ -260,15 +279,24 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
                     self.logger.info(e)
                     self.logger.info(f"Out of memory with {len(batch_sents)} sentence, "
                                      f"Max sentence length is {max(len(i.original_obj) for i in batch_sents)}. "
-                                     f"Clear cache, split batch and try again. If this appear frequently, "
-                                     "you should use a smaller batch size.")
+                                     f"Clear cache, split batch and try again automatically."
+                                     f"If this appear frequently, you should use a smaller batch size.")
+                    del output
                     if len(batch_sents) == 1:
                         self.logger.info("Even the smallest batch cause OOM.")
-                        raise
+                        # may be we still have chance yet?
+                        failure_when_smallest_limit -= 1
+                        if failure_when_smallest_limit > 0:
+                            # some variable is reference by the exception stack
+                            # need to clear cache out of here
+                            need_gc = True
+                            need_empty_cache = True
+                            stack.append((batch_sents, feed_dict))
+                        else:
+                            raise
                     else:
-                        del output
                         del feed_dict
-                        torch.cuda.empty_cache()
+                        need_empty_cache = True
                         split_point = int(len(batch_sents) / 2)
                         batch_sents_1 = batch_sents[:split_point]
                         if batch_sents_1:
@@ -276,8 +304,6 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
                             feed_dict_1 = train_data.return_batches(
                                 batch_sents_1, pls=IdentityGetAttr(), batch_size=0, sort_key_func=None,
                                 original=False, use_sub_batch=False, plugins=self.plugins)
-                            if self.args.gpu:
-                                to_cuda(feed_dict_1)
                             stack.append((batch_sents_1, feed_dict_1))
                             del batch_sents_1, feed_dict_1
                         batch_sents_2 = batch_sents[split_point:]
@@ -286,11 +312,10 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
                             feed_dict_2 = train_data.return_batches(
                                 batch_sents_2, pls=IdentityGetAttr(), batch_size=0, sort_key_func=None,
                                 original=False, use_sub_batch=False, plugins=self.plugins)
-                            if self.args.gpu:
-                                to_cuda(feed_dict_2)
                             stack.append((batch_sents_2, feed_dict_2))
                             del batch_sents_2, feed_dict_2
-                    del e
+                del e
+
         if batch_devided:
             for p in self.network.parameters():
                 if p.requires_grad and p.grad is not None:
@@ -307,8 +332,6 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
                 shuffle=True, original=True, plugins=self.plugins
                 # sort_key_func=lambda x: x.sent_length
         ):
-            if self.args.gpu:
-                to_cuda(feed_dict)
             self.schedule_lr(self.global_step)
             for output in self.do_forward_and_backward(
                     train_data, batch_sents, feed_dict):
@@ -357,8 +380,9 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
             self.args.output, filename, "best")
         sys.stdout.write("\n")
         outputs = list(self.predict_bucket(buckets))
-        for sample_idx, sample in enumerate(random.sample(outputs, 3)):
-            self.writer.add_text("sample_outputs", sample.to_string(), self.global_step + sample_idx)
+        if hasattr(outputs[0], "to_string"):
+            for sample_idx, sample in enumerate(random.sample(outputs, 3)):
+                self.writer.add_text("sample_outputs", sample.to_string(), self.global_step + sample_idx)
         self.write_result(output_file, outputs)
         self.evaluate_and_update_best_score(
             data, filename, outputs, output_file, best_output_file,
