@@ -77,7 +77,7 @@ class BERTPlugin(InputPluginBase):
 
         self.bert = NoPickle(BertModel.from_pretrained(bert_model))
         if gpu:
-            self.bert = self.bert.cuda()
+            self.bert = NoPickle(self.bert.cuda())
         self.output_dim = self.bert.pooler.dense.in_features
         self.max_len = self.bert.embeddings.position_embeddings.num_embeddings
 
