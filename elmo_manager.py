@@ -7,7 +7,6 @@ from weakref import WeakValueDictionary
 from dataclasses import dataclass
 from torch.nn import Module, Linear
 
-from bilm.load_vocab import BiLMVocabLoader
 from coli.basic_tools.common_utils import NoPickle
 from coli.basic_tools.dataclass_argparse import argfield, OptionsBase
 from coli.data_utils.dataset import SentenceFeaturesBase
@@ -76,6 +75,7 @@ class ELMoPlugin(InputPluginBase):
                  project_to: Optional[int] = None,
                  gpu=False
                  ):
+        from bilm.load_vocab import BiLMVocabLoader
         super(ELMoPlugin, self).__init__()
         assert num_output_representations == 1
         self.num_output_representations = 1
