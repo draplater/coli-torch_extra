@@ -20,6 +20,7 @@ from coli.torch_extra.dropout import FeatureDropout, FeatureDropout2
 from coli.torch_extra.elmo_manager import ELMoPlugin
 from coli.torch_extra.seq_utils import sort_sequences, unsort_sequences, pad_timestamps_and_batches
 from coli.torch_extra.transformer import TransformerEncoder
+from coli.torch_extra.xlnet_manager import XLNetPlugin
 
 
 def get_external_embedding(loader, freeze=True):
@@ -374,14 +375,21 @@ class OptimizerOptions(OptionsBase):
     type: str = argfield(default="adam", choices=["adam", "adamw"])
     adam_options: AdamOptions = argfield(default_factory=AdamOptions)
     adamw_options: AdamWOptions = argfield(default_factory=AdamWOptions)
+    look_ahead_k: int = 0
+    look_ahead_alpha: int = 0.5
 
     def get(self, trainable_params):
         if self.type == "adam":
-            return self.adam_options.get_optimizer(trainable_params)
+            ret = self.adam_options.get_optimizer(trainable_params)
         elif self.type == "adamw":
-            return self.adamw_options.get_optimizer(trainable_params)
+            ret = self.adamw_options.get_optimizer(trainable_params)
         else:
             raise Exception(f"Optimizer {self.type} is not support yet")
+
+        if self.look_ahead_k > 0:
+            from coli.torch_extra.lookahead import Lookahead
+            ret = Lookahead(ret, k=5, alpha=0.5)
+        return ret
 
     @property
     def learning_rate(self):
@@ -429,7 +437,7 @@ def create_mlp(input_dim, output_dim,
     return Sequential(*module_list)
 
 
-external_contextual_embeddings = {"elmo": ELMoPlugin, "bert": BERTPlugin, "none": None}
+external_contextual_embeddings = {"elmo": ELMoPlugin, "bert": BERTPlugin, "xlnet": XLNetPlugin, "none": None}
 
 
 class ExternalContextualEmbedding(BranchSelect):
@@ -440,6 +448,7 @@ class ExternalContextualEmbedding(BranchSelect):
         type: "Embedding Type" = argfield("none", choices=list(external_contextual_embeddings.keys()))
         elmo_options: ELMoPlugin.Options = argfield(default_factory=ELMoPlugin.Options)
         bert_options: BERTPlugin.Options = argfield(default_factory=BERTPlugin.Options)
+        xlnet_options: XLNetPlugin.Options = argfield(default_factory=XLNetPlugin.Options)
 
 
 def smartly_remove_weight_decay(named_parameters):
