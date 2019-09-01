@@ -14,8 +14,12 @@ def convert_to_torch_tensor(inputs, device=None):
 
 def to_cuda(inputs):
     for i in inputs.keys():
-        if isinstance(inputs[i], Tensor):
-            inputs[i] = inputs[i].pin_memory().cuda()
+        if isinstance(inputs[i], Tensor) and inputs[i].device.type == "cpu":
+            inputs[i] = inputs[i].pin_memory().cuda(non_blocking=True)
+        elif isinstance(inputs[i], list):
+            for idx in range(len(inputs[i])):
+                if isinstance(inputs[i][idx], Tensor) and inputs[i][idx].device.type == "cpu":
+                    inputs[i][idx] = inputs[i][idx].pin_memory().cuda(non_blocking=True)
 
 
 def pad_and_stack_1d(tensors, to=-1, constant=0, device=None):
