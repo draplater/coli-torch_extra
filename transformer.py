@@ -186,7 +186,7 @@ class MultiHeadAttention(ScriptModule):
         # query/key/value for each head
         q_padded, k_padded, v_padded = self.split_qkv_packed(inp)
 
-        invalid_mask = 1 - sentence_mask
+        invalid_mask = torch.logical_not(sentence_mask)
         attn_mask = invalid_mask.unsqueeze(1).expand(batch_size, max_sent_len, max_sent_len).repeat(self.n_head, 1, 1)
 
         outputs_padded, attns_padded = self.attention(
