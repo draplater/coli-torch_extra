@@ -69,3 +69,10 @@ class Lookahead(Optimizer):
     def add_param_group(self, param_group):
         param_group["counter"] = 0
         self.optimizer.add_param_group(param_group)
+
+    def __getstate__(self):
+        return self.__dict__
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
