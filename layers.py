@@ -388,7 +388,7 @@ class OptimizerOptions(OptionsBase):
 
         if self.look_ahead_k > 0:
             from coli.torch_extra.lookahead import Lookahead
-            ret = Lookahead(ret, k=5, alpha=0.5)
+            ret = Lookahead(ret, k=self.look_ahead_k, alpha=self.look_ahead_alpha)
         return ret
 
     @property
