@@ -140,15 +140,15 @@ class MultiHeadAttention(ScriptModule):
             q_s = torch.cat([
                 torch.bmm(qk_inp_repeated[:, :, :self.d_content], self.w_qs1),
                 torch.bmm(qk_inp_repeated[:, :, self.d_content:], self.w_qs2),
-            ], -1)
+            ], 2)
             k_s = torch.cat([
                 torch.bmm(qk_inp_repeated[:, :, :self.d_content], self.w_ks1),
                 torch.bmm(qk_inp_repeated[:, :, self.d_content:], self.w_ks2),
-            ], -1)
+            ], 2)
             v_s = torch.cat([
                 torch.bmm(v_inp_repeated[:, :, :self.d_content], self.w_vs1),
                 torch.bmm(v_inp_repeated[:, :, self.d_content:], self.w_vs2),
-            ], -1)
+            ], 2)
         return q_s.view(self.n_head * batch_size, max_sent_len, -1), \
                k_s.view(self.n_head * batch_size, max_sent_len, -1), \
                v_s.view(self.n_head * batch_size, max_sent_len, -1)
@@ -173,7 +173,7 @@ class MultiHeadAttention(ScriptModule):
             outputs = torch.cat([
                 self.proj1(outputs1),
                 self.proj2(outputs2),
-            ], -1)
+            ], 1)
 
         return outputs
 
@@ -270,7 +270,7 @@ class PartitionedPositionwiseFeedForward(ScriptModule):
         outputp = self.relu_dropout(self.relu(outputp))
         outputp = self.w_2p(outputp)
 
-        output = torch.cat([outputc, outputp], -1)
+        output = torch.cat([outputc, outputp], 2)
 
         output = self.residual_dropout(output)
         return self.layer_norm(output + residual)
@@ -376,7 +376,7 @@ class TransformerEncoder(ScriptModule):
             timing_signal = self.timing_layer_norm(timing_signal)
 
         if self.partitioned:
-            res = torch.cat([res, timing_signal], dim=-1)
+            res = torch.cat([res, timing_signal], dim=2)
         else:
             res += timing_signal
 
