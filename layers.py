@@ -1,3 +1,4 @@
+import dataclasses
 from collections import UserDict
 from dataclasses import dataclass, field
 
@@ -9,6 +10,7 @@ from torch.nn import Embedding, Module, Dropout, LayerNorm, Sequential, Linear, 
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torch.optim import Adam
 
+from coli.basic_tools.common_utils import try_cache_keeper
 from coli.basic_tools.dataclass_argparse import argfield, BranchSelect, OptionsBase
 from coli.basic_tools.logger import default_logger
 from coli.torch_extra import tf_rnn
@@ -449,6 +451,16 @@ class ExternalContextualEmbedding(BranchSelect):
         elmo_options: ELMoPlugin.Options = argfield(default_factory=ELMoPlugin.Options)
         bert_options: BERTPlugin.Options = argfield(default_factory=BERTPlugin.Options)
         xlnet_options: XLNetPlugin.Options = argfield(default_factory=XLNetPlugin.Options)
+
+    @classmethod
+    def get(cls, options: Options, **kwargs):
+        branch_options = cls.get_branch_options(options)
+
+        @try_cache_keeper(dataclasses.astuple(branch_options))
+        def get_module():
+            return super(ExternalContextualEmbedding, cls).get(options, **kwargs)
+
+        return get_module()
 
 
 def smartly_remove_weight_decay(named_parameters):
