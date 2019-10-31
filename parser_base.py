@@ -13,10 +13,10 @@ from typing import List, Tuple, Generic, TypeVar, Type, Any, Optional
 import numpy as np
 from dataclasses import dataclass, field
 from torch.nn import Module, Parameter
-from torch.optim import Optimizer
+from torch.optim.optimizer import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from coli.basic_tools.common_utils import T, NoPickle, AttrDict, Progbar, IdentityGetAttr
+from coli.basic_tools.common_utils import T, NoPickle, AttrDict, Progbar, IdentityGetAttr, try_cache_keeper
 from coli.basic_tools.dataclass_argparse import argfield, pretty_format, merge_predict_time_options
 from coli.basic_tools.logger import log_to_file
 from coli.parser_tools.magic_pack import read_script, write_script, get_codes
@@ -187,8 +187,11 @@ class SimpleParser(Generic[OptionsType, DF, SF], PyTorchParserBase[DF, SF],
             self.plugins["pretrained_contextual"] = pretrained_external_embedding
 
         if args.embed_file is not None:
-            self.plugins["external_embedding"] = ExternalEmbeddingPlugin(
-                args.embed_file, gpu=args.gpu)
+            @try_cache_keeper((args.embed_file, args.gpu))
+            def get_external_embedding():
+                return ExternalEmbeddingPlugin(args.embed_file, gpu=args.gpu)
+
+            self.plugins["external_embedding"] = get_external_embedding()
 
         self.global_step = 0
         self.global_epoch = 1
