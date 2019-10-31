@@ -454,6 +454,8 @@ class ExternalContextualEmbedding(BranchSelect):
 
     @classmethod
     def get(cls, options: Options, **kwargs):
+        if options.type == "none":
+            return None
         branch_options = cls.get_branch_options(options)
 
         @try_cache_keeper(dataclasses.astuple(branch_options))
