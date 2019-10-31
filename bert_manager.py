@@ -7,6 +7,7 @@ from torch.nn import Linear
 
 from coli.basic_tools.common_utils import NoPickle, AttrDict
 from coli.basic_tools.dataclass_argparse import argfield, OptionsBase, ExistFile
+from coli.basic_tools.logger import logger
 from coli.data_utils.dataset import SentenceFeaturesBase, START_OF_SENTENCE, END_OF_SENTENCE
 from coli.torch_extra.dataset import InputPluginBase
 from coli.torch_extra.utils import pad_and_stack_1d, broadcast_gather
@@ -67,6 +68,7 @@ class BERTPlugin(InputPluginBase):
 
     def reload(self, bert_model, gpu, student_model=None):
         from pytorch_pretrained_bert import BertTokenizer, BertModel
+        logger.info(f"Reload BERT from {bert_model}")
         if bert_model.endswith('.tar.gz'):
             self.tokenizer = NoPickle(BertTokenizer.from_pretrained(
                 bert_model.replace('.tar.gz', '-vocab.txt'),
